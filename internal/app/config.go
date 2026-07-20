@@ -21,7 +21,7 @@ type Config struct {
 	Telegram  TelegramConfig
 	Assistant AssistantConfig
 	DeepSeek  DeepSeekConfig
-	Catalog   CatalogConfig
+	Gateway   GatewayConfig
 	Streams   StreamsConfig
 	Runtime   RuntimeConfig
 	Storage   StorageConfig
@@ -61,6 +61,7 @@ type AssistantTraceConfig struct {
 type PtchanContextConfig struct {
 	Enabled         bool
 	BaseURL         string
+	GatewayURL      string
 	Timeout         time.Duration
 	CacheTTL        time.Duration
 	MaxReplies      int
@@ -74,9 +75,12 @@ type DeepSeekConfig struct {
 	Timeout   time.Duration
 }
 
-type CatalogConfig struct {
+type GatewayConfig struct {
+	ConsumerName  string
+	Secret        string
+	Addr          string
+	Path          string
 	BaseURL       string
-	PollInterval  time.Duration
 	MinReplyPosts int
 	Filter        ptchan.Filter
 	PruneAfter    time.Duration
@@ -98,7 +102,7 @@ type ComponentName string
 
 const (
 	componentAssistant ComponentName = "assistant"
-	componentCatalog   ComponentName = "catalog"
+	componentGateway   ComponentName = "gateway"
 	componentStreams   ComponentName = "streams"
 )
 
@@ -124,7 +128,7 @@ type fileConfig struct {
 	Telegram  fileTelegramConfig  `toml:"telegram"`
 	Assistant fileAssistantConfig `toml:"assistant"`
 	DeepSeek  fileDeepSeekConfig  `toml:"deepseek"`
-	Catalog   fileCatalogConfig   `toml:"catalog"`
+	Gateway   fileGatewayConfig   `toml:"gateway"`
 	Streams   fileStreamsConfig   `toml:"streams"`
 	Runtime   fileRuntimeConfig   `toml:"runtime"`
 }
@@ -155,6 +159,7 @@ type fileAssistantTrace struct {
 type filePtchanContext struct {
 	Enabled         bool   `toml:"enabled"`
 	BaseURL         string `toml:"base_url"`
+	GatewayURL      string `toml:"gateway_url"`
 	Timeout         string `toml:"timeout"`
 	CacheTTL        string `toml:"cache_ttl"`
 	MaxReplies      int    `toml:"max_replies"`
@@ -180,9 +185,11 @@ type fileDeepSeekConfig struct {
 	Timeout   string `toml:"timeout"`
 }
 
-type fileCatalogConfig struct {
+type fileGatewayConfig struct {
+	ConsumerName    string   `toml:"consumer_name"`
+	Addr            string   `toml:"addr"`
+	Path            string   `toml:"path"`
 	BaseURL         string   `toml:"base_url"`
-	PollInterval    string   `toml:"poll_interval"`
 	MinReplyPosts   int      `toml:"min_reply_posts"`
 	BoardDenylist   []string `toml:"board_denylist"`
 	KeywordDenylist []string `toml:"keyword_denylist"`
@@ -242,6 +249,7 @@ func LoadConfig() (Config, error) {
 			},
 			PtchanContext: filePtchanContext{
 				BaseURL:         "https://ptchan.org",
+				GatewayURL:      "http://ptchan-gateway:8080",
 				Timeout:         "5s",
 				CacheTTL:        "60s",
 				MaxReplies:      10,
@@ -254,11 +262,14 @@ func LoadConfig() (Config, error) {
 			MaxTokens: 500,
 			Timeout:   "60s",
 		},
-		Catalog: fileCatalogConfig{
-			BaseURL:      "https://ptchan.org",
-			PollInterval: "60s",
-			MaxThreadAge: "0s",
-			PruneAfter:   "720h",
+		Gateway: fileGatewayConfig{
+			ConsumerName:  "martie",
+			Addr:          ":8081",
+			Path:          "/internal/ptchan/events",
+			BaseURL:       "https://ptchan.org",
+			MinReplyPosts: 10,
+			MaxThreadAge:  "0s",
+			PruneAfter:    "720h",
 		},
 		Runtime: fileRuntimeConfig{
 			Logging: fileLoggingConfig{
@@ -308,6 +319,7 @@ func LoadConfig() (Config, error) {
 			PtchanContext: PtchanContextConfig{
 				Enabled:         raw.Assistant.PtchanContext.Enabled,
 				BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.BaseURL), "/"),
+				GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.GatewayURL), "/"),
 				MaxReplies:      raw.Assistant.PtchanContext.MaxReplies,
 				MaxContextRunes: raw.Assistant.PtchanContext.MaxContextRunes,
 			},
@@ -317,12 +329,16 @@ func LoadConfig() (Config, error) {
 			Model:     strings.TrimSpace(raw.DeepSeek.Model),
 			MaxTokens: raw.DeepSeek.MaxTokens,
 		},
-		Catalog: CatalogConfig{
-			BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Catalog.BaseURL), "/"),
-			MinReplyPosts: raw.Catalog.MinReplyPosts,
+		Gateway: GatewayConfig{
+			ConsumerName:  strings.TrimSpace(raw.Gateway.ConsumerName),
+			Secret:        strings.TrimSpace(os.Getenv(gatewaySecretEnv(raw.Gateway.ConsumerName))),
+			Addr:          strings.TrimSpace(raw.Gateway.Addr),
+			Path:          cleanGatewayPath(raw.Gateway.Path),
+			BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Gateway.BaseURL), "/"),
+			MinReplyPosts: raw.Gateway.MinReplyPosts,
 			Filter: ptchan.Filter{
-				BoardDenylist:   raw.Catalog.BoardDenylist,
-				KeywordDenylist: raw.Catalog.KeywordDenylist,
+				BoardDenylist:   raw.Gateway.BoardDenylist,
+				KeywordDenylist: raw.Gateway.KeywordDenylist,
 			},
 		},
 		Streams: StreamsConfig{EndMissThreshold: raw.Streams.EndMissThreshold},
@@ -353,6 +369,9 @@ func LoadConfig() (Config, error) {
 	if cfg.Assistant.PtchanContext.Enabled && cfg.Assistant.PtchanContext.BaseURL == "" {
 		return Config{}, fmt.Errorf("assistant.ptchan_context.base_url is required when enabled")
 	}
+	if cfg.Assistant.PtchanContext.Enabled && cfg.Assistant.PtchanContext.GatewayURL == "" {
+		return Config{}, fmt.Errorf("assistant.ptchan_context.gateway_url is required when enabled")
+	}
 	if cfg.Assistant.Trace.MaxFiles <= 0 {
 		return Config{}, fmt.Errorf("assistant.trace.max_files must be positive")
 	}
@@ -362,11 +381,20 @@ func LoadConfig() (Config, error) {
 	if cfg.DeepSeek.MaxTokens <= 0 {
 		return Config{}, fmt.Errorf("deepseek.max_tokens must be positive")
 	}
-	if cfg.Catalog.BaseURL == "" {
-		return Config{}, fmt.Errorf("catalog.base_url is required")
+	if cfg.Gateway.ConsumerName == "" {
+		return Config{}, fmt.Errorf("gateway.consumer_name is required")
 	}
-	if cfg.Catalog.MinReplyPosts < 0 {
-		return Config{}, fmt.Errorf("catalog.min_reply_posts must be non-negative")
+	if cfg.Gateway.Addr == "" {
+		return Config{}, fmt.Errorf("gateway.addr is required")
+	}
+	if cfg.Gateway.Path == "" {
+		return Config{}, fmt.Errorf("gateway.path is required")
+	}
+	if cfg.Gateway.BaseURL == "" {
+		return Config{}, fmt.Errorf("gateway.base_url is required")
+	}
+	if cfg.Gateway.MinReplyPosts < 0 {
+		return Config{}, fmt.Errorf("gateway.min_reply_posts must be non-negative")
 	}
 	if cfg.Streams.EndMissThreshold <= 0 {
 		return Config{}, fmt.Errorf("streams.end_miss_threshold must be positive")
@@ -382,7 +410,7 @@ func LoadConfig() (Config, error) {
 	for _, value := range raw.Runtime.Components {
 		component := ComponentName(strings.TrimSpace(value))
 		switch component {
-		case componentCatalog, componentStreams, componentAssistant:
+		case componentGateway, componentStreams, componentAssistant:
 		default:
 			return Config{}, fmt.Errorf("runtime.components contains unknown component %q", value)
 		}
@@ -422,16 +450,13 @@ func LoadConfig() (Config, error) {
 	if cfg.DeepSeek.Timeout, err = positiveDuration("deepseek.timeout", raw.DeepSeek.Timeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.Catalog.PollInterval, err = positiveDuration("catalog.poll_interval", raw.Catalog.PollInterval); err != nil {
-		return Config{}, err
-	}
 	if cfg.Streams.PollInterval, err = positiveDuration("streams.poll_interval", raw.Streams.PollInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.Catalog.Filter.MaxThreadAge, err = nonNegativeDuration("catalog.max_thread_age", raw.Catalog.MaxThreadAge); err != nil {
+	if cfg.Gateway.Filter.MaxThreadAge, err = nonNegativeDuration("gateway.max_thread_age", raw.Gateway.MaxThreadAge); err != nil {
 		return Config{}, err
 	}
-	if cfg.Catalog.PruneAfter, err = nonNegativeDuration("catalog.prune_after", raw.Catalog.PruneAfter); err != nil {
+	if cfg.Gateway.PruneAfter, err = nonNegativeDuration("gateway.prune_after", raw.Gateway.PruneAfter); err != nil {
 		return Config{}, err
 	}
 
@@ -454,11 +479,14 @@ func (c Config) ValidateRun() error {
 	if c.Telegram.BotToken == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
 	}
-	if (c.runs(componentCatalog) || c.runs(componentStreams)) && c.Telegram.NotificationChatID == 0 {
-		return fmt.Errorf("telegram.notification_chat_id is required for catalog and streams")
+	if (c.runs(componentGateway) || c.runs(componentStreams)) && c.Telegram.NotificationChatID == 0 {
+		return fmt.Errorf("telegram.notification_chat_id is required for gateway and streams")
 	}
 	if c.runs(componentStreams) && len(c.Streams.Channels) == 0 {
 		return fmt.Errorf("streams requires at least one channel")
+	}
+	if c.runs(componentGateway) && c.Gateway.Secret == "" {
+		return fmt.Errorf("%s is required for gateway", gatewaySecretEnv(c.Gateway.ConsumerName))
 	}
 	if !c.runs(componentAssistant) {
 		return nil
@@ -481,6 +509,9 @@ func (c Config) ValidateRun() error {
 	if c.DeepSeek.APIKey == "" {
 		return fmt.Errorf("DEEPSEEK_API_KEY is required for assistant")
 	}
+	if c.Assistant.PtchanContext.Enabled && c.Gateway.Secret == "" {
+		return fmt.Errorf("%s is required for assistant ptchan context", gatewaySecretEnv(c.Gateway.ConsumerName))
+	}
 	return nil
 }
 
@@ -489,6 +520,27 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func gatewaySecretEnv(name string) string {
+	normalized := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return r - 'a' + 'A'
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, strings.TrimSpace(name))
+	return "PTCHAN_WEBHOOK_" + normalized + "_SECRET"
+}
+
+func cleanGatewayPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.HasPrefix(path, "/") {
+		return path
+	}
+	return "/" + path
 }
 
 func positiveDuration(name, value string) (time.Duration, error) {

@@ -4,7 +4,7 @@ locale = "en"
 name = "Martie"
 
 [telegram]
-# Channel or chat that receives catalog and stream notifications.
+# Channel or chat that receives gateway and stream notifications.
 notification_chat_id = 123456789
 # Linked discussion group where the assistant accepts requests.
 discussion_chat_id = -1001234567890
@@ -47,10 +47,11 @@ global_limit = 100
 global_burst = 12
 
 [assistant.ptchan_context]
-# When enabled, messages containing ptchan thread links fetch a live compact
-# thread snapshot and pass it to the assistant as bounded external context.
+# When enabled, messages containing ptchan thread links fetch compact sanitized
+# thread context from ptchan-gateway and pass it to the assistant.
 enabled = false
 base_url = "https://ptchan.org"
+gateway_url = "http://ptchan-gateway:8080"
 timeout = "5s"
 cache_ttl = "60s"
 max_replies = 10
@@ -70,24 +71,28 @@ max_tokens = 500
 # Deadline for one DeepSeek completion request.
 timeout = "60s"
 
-[catalog]
-# ptchan origin; the client fetches /catalog.json from it.
+[gateway]
+# Consumer name configured in ptchan-gateway. The matching secret is read from
+# PTCHAN_WEBHOOK_<CONSUMER_NAME>_SECRET, so "martie" uses PTCHAN_WEBHOOK_MARTIE_SECRET.
+consumer_name = "martie"
+# Address and path where Martie accepts signed gateway webhooks.
+addr = ":8081"
+path = "/internal/ptchan/events"
+# Public ptchan origin used when formatting Telegram thread links.
 base_url = "https://ptchan.org"
-# How often to fetch the catalog.
-poll_interval = "5m"
-# Delay notification until a thread has at least this many reply posts.
+# Notify after this many observed reply posts.
 min_reply_posts = 10
-# Boards and case-insensitive text fragments excluded from tracking.
+# Boards and case-insensitive OP text fragments excluded from tracking.
 board_denylist = []
 keyword_denylist = []
 # Zero disables the age limit.
 max_thread_age = "0s"
-# Forget stored threads after this duration; zero disables pruning.
+# Forget old tracked threads and sent notification/event receipts after this duration.
 prune_after = "24h"
 
 [runtime]
-# Components run by this process: "catalog", "streams", and/or "assistant".
-components = ["catalog", "streams", "assistant"]
+# Components run by this process: "gateway", "streams", and/or "assistant".
+components = ["gateway", "streams", "assistant"]
 # Empty disables the Prometheus endpoint.
 metrics_addr = ""
 

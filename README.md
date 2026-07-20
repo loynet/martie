@@ -2,11 +2,11 @@
 
 Martie is a small Telegram bot for the ptchan community. It can run three independent components:
 
-- `catalog` watches the ptchan catalog and announces new threads.
+- `gateway` receives signed ptchan-gateway webhooks and announces eligible threads.
 - `streams` watches configured stream URLs and announces when they go live.
 - `assistant` answers messages addressed to the bot in a Telegram discussion group using DeepSeek.
 
-Martie uses long polling, stores its small amount of durable state in SQLite, and can expose Prometheus metrics. It has no webhook or public API beyond the optional metrics endpoint.
+Martie uses long polling for Telegram, stores its small amount of durable state in SQLite, receives private webhooks from ptchan-gateway, and can expose Prometheus metrics.
 
 ## Run locally
 
@@ -28,19 +28,11 @@ Configuration is split deliberately:
 
 - `.env.dev` contains secrets.
 - `config/dev.toml` contains application settings.
-- `runtime.components` selects `catalog`, `streams`, `assistant`, or any combination.
+- `runtime.components` selects `gateway`, `streams`, `assistant`, or any combination.
 
 The example TOML documents every setting. Unknown keys and invalid values fail at startup. `BOT_ENV=prod` selects `.env.prod`, `config/prod.toml`, and `data/prod.db`.
 
-## First catalog run
-
-The catalog component announces every eligible thread it has not seen before. To establish the current catalog as the baseline without sending notifications, run this once before starting Martie:
-
-```bash
-make snapshot BOT_ENV=prod
-```
-
-The snapshot command only needs catalog and storage configuration; it does not require the runtime component list or Telegram and DeepSeek secrets.
+On first startup, the gateway component records its bootstrap time and suppresses older webhook events. New events observed after that point are processed normally.
 
 ## Deploy with Docker
 
@@ -54,7 +46,7 @@ Useful operational commands:
 
 ```bash
 make docker-logs BOT_ENV=prod
-make docker-snapshot BOT_ENV=prod
+make docker-traces BOT_ENV=prod
 make docker-clean
 ```
 
@@ -89,7 +81,7 @@ Prometheus can then scrape `martie-prod:9090` without publishing the port on the
 
 ## Telegram setup notes
 
-The notification chat receives catalog and stream announcements. The discussion chat is where the assistant listens for mentions and replies.
+The notification chat receives gateway and stream announcements. The discussion chat is where the assistant listens for mentions and replies.
 
 To receive ordinary group mentions, make the bot a group administrator or disable Group Privacy in BotFather. If you do not know the discussion chat ID, run Martie, mention it in the group, and inspect the debug log for the observed chat ID.
 
@@ -97,9 +89,11 @@ Access to the assistant is fail-closed by default. Configure `telegram.allowed_u
 
 When the assistant is enabled, addressed message text and recent conversation context are sent to the configured DeepSeek API. Telegram identities are replaced with temporary aliases, but message content is not anonymized.
 
-The assistant can optionally enrich requests that contain ptchan thread links. When `assistant.ptchan_context.enabled` is true, Martie fetches the live thread JSON from ptchan, wraps a bounded OP + recent replies snapshot as untrusted external context, and sends that only for the current completion. The fetched snapshot is not persisted in conversation history.
+The assistant can optionally enrich requests that contain ptchan thread links. When `assistant.ptchan_context.enabled` is true, Martie asks ptchan-gateway for signed sanitized thread context, wraps a bounded OP + recent replies view as untrusted external context, and sends that only for the current completion. The fetched context is not persisted in conversation history.
 
-For local prompt inspection, set `assistant.trace.enabled = true` in TOML. Martie then writes one private, human-readable trace for every assistant interaction sent to the model and logs its path. Each trace separates stored conversation state from the exact model request and result. Traces contain private message and prompt content and are disabled by default. `assistant.trace.max_files` controls retention. Traces default to `data/traces`, which also works in Docker because `data` is the writable persistent volume; `MARTIE_ASSISTANT_TRACE_DIR` can override that deployment path.
+For local prompt inspection, set `assistant.trace.enabled = true` in TOML. Martie then writes one private, human-readable trace for every assistant interaction sent to the model and logs its path. Each trace separates stored conversation state from the exact model request and result. Traces contain private message and prompt content and are disabled by default. `assistant.trace.max_files` controls retention.
+
+Local runs write to `data/traces` by default. Docker writes to `/data/traces` inside its named volume; that directory is not directly visible in the host checkout. Run `make docker-traces BOT_ENV=dev` (or `BOT_ENV=prod`) to copy the current traces into the host's `data/traces`. `MARTIE_ASSISTANT_TRACE_DIR` can override the path for non-Docker deployments.
 
 ## Development
 

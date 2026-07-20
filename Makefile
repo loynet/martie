@@ -17,6 +17,7 @@ LOAD_ENV = set -a; . ./$(ENV_FILE); set +a; \
 DOCKER_RUN_FLAGS = --env-file $(ENV_FILE) \
 	-e CONFIG_FILE=/etc/martie/config.toml \
 	-e SQLITE_PATH=/data/bot.db \
+	-e MARTIE_ASSISTANT_TRACE_DIR=/data/traces \
 	--mount type=bind,source=$(abspath $(CONFIG_FILE)),target=/etc/martie/config.toml,readonly \
 	--mount type=volume,source=$(VOLUME),target=/data \
 	--read-only \
@@ -36,12 +37,12 @@ ifneq ($(strip $(DOCKER_NETWORK)),)
 DOCKER_NETWORK_FLAGS = --network $(DOCKER_NETWORK)
 endif
 
-.PHONY: help fmt lint test tidy build run snapshot docker-build docker-run docker-snapshot docker-deploy docker-logs docker-clean check clean
+.PHONY: help fmt lint test tidy build run docker-build docker-run docker-deploy docker-logs docker-traces docker-clean check clean
 
 help:
 	@printf '%s\n' \
-		'Targets: fmt lint test tidy build run snapshot check clean' \
-		'Docker:  docker-build docker-run docker-snapshot docker-deploy docker-logs docker-clean' \
+		'Targets: fmt lint test tidy build run check clean' \
+		'Docker:  docker-build docker-run docker-deploy docker-logs docker-traces docker-clean' \
 		'Config:  BOT_ENV=dev reads config/dev.toml and .env.dev' \
 		'Image:   IMAGE=martie:local' \
 		'Logs:    DOCKER_LOG_DRIVER=local or journald' \
@@ -65,9 +66,6 @@ build:
 run:
 	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie
 
-snapshot:
-	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie snapshot
-
 docker-build:
 	docker build --pull -t $(IMAGE) .
 
@@ -80,13 +78,6 @@ docker-run:
 		$(DOCKER_NETWORK_FLAGS) \
 		$(DOCKER_RUN_EXTRA) \
 		$(IMAGE)
-
-docker-snapshot:
-	docker run --rm \
-		$(DOCKER_RUN_FLAGS) \
-		$(DOCKER_LOG_FLAGS) \
-		$(DOCKER_NETWORK_FLAGS) \
-		$(IMAGE) snapshot
 
 docker-deploy: docker-build
 	-docker rm -f $(CONTAINER)
@@ -101,6 +92,10 @@ docker-deploy: docker-build
 
 docker-logs:
 	$(DOCKER_LOG_COMMAND)
+
+docker-traces:
+	mkdir -p data
+	docker cp $(CONTAINER):/data/traces ./data
 
 docker-clean:
 	-docker rm -f martie-dev martie-prod
