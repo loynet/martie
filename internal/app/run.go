@@ -47,6 +47,8 @@ type component struct {
 	run  func(context.Context) error
 }
 
+const ptchanGatewayContextLimit = 50
+
 func Run(
 	ctx context.Context,
 	cfg Config,
@@ -106,7 +108,7 @@ func Run(
 				cfg.Gateway.ConsumerName,
 				cfg.Gateway.Secret,
 				cfg.Assistant.PtchanContext.Timeout,
-				cfg.Assistant.PtchanContext.MaxReplies+1,
+				ptchanGatewayContextLimit,
 			)
 		}
 		assistant.ptchan = newPtchanContextSource(cfg.Assistant.PtchanContext, contextClient, logger.With("component", componentAssistant, "context", "ptchan"))

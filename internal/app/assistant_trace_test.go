@@ -15,7 +15,7 @@ func TestFormatAssistantTraceSeparatesStoredAndModelContext(t *testing.T) {
 		StartedAt:    time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC),
 		MessageID:    42,
 		ThreadID:     7,
-		UserAlias:    "@assistant_user_0001",
+		UserAlias:    "@assistant_user_local_0001",
 		UsedHistory:  true,
 		UsedReply:    true,
 		UsedPtchan:   true,

@@ -43,7 +43,6 @@ type AssistantConfig struct {
 	GlobalRequestLimit int
 	GlobalRequestBurst int
 	SystemPrompt       string
-	ChatPrompt         string
 	MaxInputRunes      int
 	LogMemory          bool
 	Trace              AssistantTraceConfig
@@ -144,7 +143,6 @@ type fileAssistantConfig struct {
 	MaxInputRunes int                 `toml:"max_input_runes"`
 	LogMemory     bool                `toml:"log_memory"`
 	SystemPrompt  string              `toml:"system_prompt"`
-	ChatPrompt    string              `toml:"chat_prompt"`
 	RateLimit     fileRateLimitConfig `toml:"rate_limit"`
 	Memory        fileMemoryConfig    `toml:"memory"`
 	PtchanContext filePtchanContext   `toml:"ptchan_context"`
@@ -252,8 +250,8 @@ func LoadConfig() (Config, error) {
 				GatewayURL:      "http://ptchan-gateway:8080",
 				Timeout:         "5s",
 				CacheTTL:        "60s",
-				MaxReplies:      10,
-				MaxContextRunes: 8000,
+				MaxReplies:      25,
+				MaxContextRunes: 24000,
 			},
 			Trace: fileAssistantTrace{MaxFiles: 100},
 		},
@@ -347,7 +345,6 @@ func LoadConfig() (Config, error) {
 	}
 
 	cfg.Assistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Assistant.SystemPrompt), "{{name}}", cfg.Assistant.Name)
-	cfg.Assistant.ChatPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Assistant.ChatPrompt), "{{name}}", cfg.Assistant.Name)
 	if cfg.Assistant.MaxInputRunes <= 0 {
 		return Config{}, fmt.Errorf("assistant.max_input_runes must be positive")
 	}
@@ -496,9 +493,6 @@ func (c Config) ValidateRun() error {
 	}
 	if c.Assistant.SystemPrompt == "" {
 		return fmt.Errorf("assistant.system_prompt is required for assistant")
-	}
-	if c.Assistant.ChatPrompt == "" {
-		return fmt.Errorf("assistant.chat_prompt is required for assistant")
 	}
 	if c.Assistant.DiscussionChatID == 0 {
 		return fmt.Errorf("telegram.discussion_chat_id is required for assistant")

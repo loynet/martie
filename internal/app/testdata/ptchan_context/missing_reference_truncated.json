@@ -1,0 +1,56 @@
+{
+  "board": "i",
+  "thread_id": 4400,
+  "posts": [
+    {
+      "board": "i",
+      "thread_id": 4400,
+      "post_id": 4450,
+      "url": "https://ptchan.org/i/thread/4400.html#4450",
+      "date": "2026-07-23T12:20:00Z",
+      "message": "The earlier explanation was better, but it got buried.",
+      "name": "Anonymous",
+      "attachment_count": 0
+    },
+    {
+      "board": "i",
+      "thread_id": 4400,
+      "post_id": 4451,
+      "url": "https://ptchan.org/i/thread/4400.html#4451",
+      "date": "2026-07-23T12:22:00Z",
+      "message": ">>4410\nThis is the part the bot needs, but that post is outside the returned context window.",
+      "name": "Anonymous",
+      "attachment_count": 0,
+      "references": [
+        {
+          "board": "i",
+          "thread_id": 4400,
+          "post_id": 4410
+        }
+      ]
+    },
+    {
+      "board": "i",
+      "thread_id": 4400,
+      "post_id": 4452,
+      "url": "https://ptchan.org/i/thread/4400.html#4452",
+      "date": "2026-07-23T12:25:00Z",
+      "message": "@deepseek can you answer >>4451 without pretending you saw >>4410?",
+      "name": "Anonymous",
+      "attachment_count": 0,
+      "references": [
+        {
+          "board": "i",
+          "thread_id": 4400,
+          "post_id": 4451
+        },
+        {
+          "board": "i",
+          "thread_id": 4400,
+          "post_id": 4410
+        }
+      ]
+    }
+  ],
+  "truncated": true
+}

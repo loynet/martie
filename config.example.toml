@@ -18,17 +18,13 @@ allow_all_users = false
 max_input_runes = 4096
 # Debug only: logs tokenized assistant history and message content.
 log_memory = false
-# Provider-facing personality and behavior. Replace this example in your untracked
-# config with the character, voice, boundaries, and response style you want.
+# Provider-facing personality and behavior. Replace this example in your
+# untracked config with the character, voice, boundaries, and response style you
+# want. Do not put Telegram or ptchan transcript-reading rules here; Martie
+# generates those context packets itself.
 # {{name}} is replaced with the top-level name in both prompts.
 system_prompt = """
 You are {{name}}, a helpful conversational assistant.
-"""
-# Conversation-specific instructions appended to system_prompt. Use this for rules
-# about group context, participant handles, memory, and reply formatting.
-# Message and reply-context wrappers supplied to the model remain localized.
-chat_prompt = """
-Use recent messages as conversation context.
 """
 
 [assistant.memory]
@@ -47,15 +43,16 @@ global_limit = 100
 global_burst = 12
 
 [assistant.ptchan_context]
-# When enabled, messages containing ptchan thread links fetch compact sanitized
-# thread context from ptchan-gateway and pass it to the assistant.
+# When enabled, messages containing ptchan thread links fetch sanitized
+# ptchan-gateway context and render a bounded prompt packet for the assistant.
 enabled = false
 base_url = "https://ptchan.org"
 gateway_url = "http://ptchan-gateway:8080"
 timeout = "5s"
 cache_ttl = "60s"
-max_replies = 10
-max_context_runes = 8000
+# Render the OP when available plus this many focused or recent non-OP posts.
+max_replies = 25
+max_context_runes = 24000
 
 [assistant.trace]
 # Write one human-readable trace for each assistant interaction sent to the model.

@@ -1,0 +1,65 @@
+{
+  "board": "i",
+  "thread_id": 4100,
+  "posts": [
+    {
+      "board": "i",
+      "thread_id": 4100,
+      "post_id": 4100,
+      "url": "https://ptchan.org/i/thread/4100.html#4100",
+      "date": "2026-07-23T09:00:00Z",
+      "subject": "tiny tools that actually help",
+      "message": "What is a small local tool you keep around because it saves you five minutes every week?",
+      "name": "Anonymous",
+      "country": "PT",
+      "attachment_count": 0,
+      "referenced_by": [
+        {
+          "board": "i",
+          "thread_id": 4100,
+          "post_id": 4102
+        }
+      ]
+    },
+    {
+      "board": "i",
+      "thread_id": 4100,
+      "post_id": 4101,
+      "url": "https://ptchan.org/i/thread/4100.html#4101",
+      "date": "2026-07-23T09:04:00Z",
+      "message": "A clipboard cleaner that strips tracking junk out of links. Boring, perfect.",
+      "name": "Anonymous",
+      "attachment_count": 0
+    },
+    {
+      "board": "i",
+      "thread_id": 4100,
+      "post_id": 4102,
+      "url": "https://ptchan.org/i/thread/4100.html#4102",
+      "date": "2026-07-23T09:07:00Z",
+      "message": ">>4100\nA tiny script that opens my notes folder and starts a daily log. It is not smart, which is why it works.",
+      "name": "Anonymous",
+      "country": "US",
+      "attachment_count": 0,
+      "references": [
+        {
+          "board": "i",
+          "thread_id": 4100,
+          "post_id": 4100
+        }
+      ]
+    },
+    {
+      "board": "i",
+      "thread_id": 4100,
+      "post_id": 4103,
+      "url": "https://ptchan.org/i/thread/4100.html#4103",
+      "date": "2026-07-23T09:12:00Z",
+      "message": ">install 40 productivity apps\n>use one shell alias forever\nThis is the way.",
+      "name": "Anonymous",
+      "donor": true,
+      "attachment_count": 0
+    }
+  ],
+  "truncated": false
+}

@@ -1,0 +1,73 @@
+{
+  "board": "i",
+  "thread_id": 2941,
+  "truncated": true,
+  "posts": [
+    {
+      "board": "i",
+      "thread_id": 2941,
+      "post_id": 2941,
+      "url": "https://ptchan.org/i/thread/2941.html#2941",
+      "date": "2026-07-23T10:12:00Z",
+      "subject": "Context rendering",
+      "message": "Thread starts here.",
+      "name": "Anonymous",
+      "attachment_count": 1
+    },
+    {
+      "board": "i",
+      "thread_id": 2941,
+      "post_id": 2942,
+      "url": "https://ptchan.org/i/thread/2941.html#2942",
+      "date": "2026-07-23T10:13:00Z",
+      "message": "This older aside should fall out of the focused packet.",
+      "name": "Anonymous",
+      "attachment_count": 0
+    },
+    {
+      "board": "i",
+      "thread_id": 2941,
+      "post_id": 2943,
+      "url": "https://ptchan.org/i/thread/2941.html#2943",
+      "date": "2026-07-23T10:15:00Z",
+      "message": ">>2941\n>be me\n>trying to wire up an agent\nit keeps missing what the OP meant",
+      "name": "Anonymous",
+      "country": "PT",
+      "attachment_count": 0,
+      "references": [
+        { "board": "i", "thread_id": 2941, "post_id": 2941 }
+      ]
+    },
+    {
+      "board": "i",
+      "thread_id": 2941,
+      "post_id": 2948,
+      "url": "https://ptchan.org/i/thread/2941.html#2948",
+      "date": "2026-07-23T10:22:00Z",
+      "message": "@deepseek can you summarize what people are arguing about?",
+      "name": "Anonymous",
+      "attachment_count": 0,
+      "references": [
+        { "board": "i", "thread_id": 2941, "post_id": 2943 },
+        { "board": "i", "thread_id": 2941, "post_id": 2999 }
+      ],
+      "referenced_by": [
+        { "board": "i", "thread_id": 2941, "post_id": 2950 }
+      ]
+    },
+    {
+      "board": "i",
+      "thread_id": 2941,
+      "post_id": 2950,
+      "url": "https://ptchan.org/i/thread/2941.html#2950",
+      "date": "2026-07-23T10:24:00Z",
+      "message": ">>2948\nsummaries are better when the quoted post is visible",
+      "name": "Anonymous",
+      "tripcode": "!agent",
+      "attachment_count": 0,
+      "references": [
+        { "board": "i", "thread_id": 2941, "post_id": 2948 }
+      ]
+    }
+  ]
+}

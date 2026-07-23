@@ -89,7 +89,9 @@ Access to the assistant is fail-closed by default. Configure `telegram.allowed_u
 
 When the assistant is enabled, addressed message text and recent conversation context are sent to the configured DeepSeek API. Telegram identities are replaced with temporary aliases, but message content is not anonymized.
 
-The assistant can optionally enrich requests that contain ptchan thread links. When `assistant.ptchan_context.enabled` is true, Martie asks ptchan-gateway for signed sanitized thread context, wraps a bounded OP + recent replies view as untrusted external context, and sends that only for the current completion. The fetched context is not persisted in conversation history.
+Use `assistant.system_prompt` for Martie's personality, tone, boundaries, and general response style. Telegram discussion behavior, participant aliases, reply context, memory, and ptchan transcript rules are generated as bounded context packets by Martie.
+
+The assistant can optionally enrich requests that contain ptchan thread links. When `assistant.ptchan_context.enabled` is true, Martie asks ptchan-gateway for signed sanitized thread context, renders a bounded packet with ptchan format notes, a conversation map, fenced post bodies, and response rules, then sends that only for the current completion. The fetched context is not persisted in conversation history.
 
 For local prompt inspection, set `assistant.trace.enabled = true` in TOML. Martie then writes one private, human-readable trace for every assistant interaction sent to the model and logs its path. Each trace separates stored conversation state from the exact model request and result. Traces contain private message and prompt content and are disabled by default. `assistant.trace.max_files` controls retention.
 

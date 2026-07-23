@@ -24,9 +24,10 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 				Body: io.NopCloser(strings.NewReader(`{
 					"board": "i",
 					"thread_id": 100,
+					"truncated": true,
 					"posts": [
-						{"board": "i", "thread_id": 100, "post_id": 100, "date": "2026-07-19T12:00:00Z", "message": "op"},
-						{"board": "i", "thread_id": 100, "post_id": 101, "date": "2026-07-19T12:01:00Z", "message": "reply", "references": [{"thread_id": 100, "post_id": 100}]}
+						{"board": "i", "thread_id": 100, "post_id": 100, "url": "https://ptchan.test/i/thread/100.html#100", "date": "2026-07-19T12:00:00Z", "message": "op"},
+						{"board": "i", "thread_id": 100, "post_id": 101, "url": "https://ptchan.test/i/thread/100.html#101", "date": "2026-07-19T12:01:00Z", "message": "reply", "references": [{"board": "i", "thread_id": 100, "post_id": 100}]}
 					]
 				}`)),
 			}, nil
@@ -46,7 +47,7 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	if gotRequest.Header.Get("x-ptchan-consumer") != "martie" || gotRequest.Header.Get("x-ptchan-timestamp") == "" || gotRequest.Header.Get("x-ptchan-signature") == "" {
 		t.Fatalf("missing signed context headers: %v", gotRequest.Header)
 	}
-	if thread.Board != "i" || thread.PostID != 100 || thread.Message != "op" || len(thread.Replies) != 1 || len(thread.Replies[0].Quotes) != 1 {
+	if thread.Board != "i" || thread.ThreadID != 100 || !thread.Truncated || len(thread.Posts) != 2 || thread.Posts[0].Message != "op" || len(thread.Posts[1].References) != 1 {
 		t.Fatalf("thread = %+v", thread)
 	}
 }

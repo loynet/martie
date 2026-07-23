@@ -24,9 +24,8 @@ allowed_user_ids = [7, 8]
 
 [assistant]
 max_input_runes = 2000
-log_memory = true
-system_prompt = " {{name}} is {{name}}. "
-chat_prompt = " Chat with {{name}}. "
+	log_memory = true
+	system_prompt = " {{name}} is {{name}}. "
 
 [assistant.memory]
 ttl = "15m"
@@ -96,8 +95,8 @@ page_url = "https://example.com/live"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Assistant.Name != "Marta" || cfg.Assistant.SystemPrompt != "Marta is Marta." || cfg.Assistant.ChatPrompt != "Chat with Marta." {
-		t.Fatalf("identity = (%q, %q, %q)", cfg.Assistant.Name, cfg.Assistant.SystemPrompt, cfg.Assistant.ChatPrompt)
+	if cfg.Assistant.Name != "Marta" || cfg.Assistant.SystemPrompt != "Marta is Marta." {
+		t.Fatalf("identity = (%q, %q)", cfg.Assistant.Name, cfg.Assistant.SystemPrompt)
 	}
 	if cfg.Locale != localization.PortuguesePortugal {
 		t.Fatalf("locale = %q", cfg.Locale)
@@ -161,7 +160,7 @@ system_prompt = "You are {{name}}."
 	if cfg.Locale != localization.English || !cfg.Assistant.AllowAllUsers || cfg.Assistant.MaxInputRunes != 4096 || cfg.Assistant.ConversationTTL != 10*time.Minute || cfg.Assistant.HistoryExchanges != 8 || cfg.Assistant.RateLimitWindow != time.Hour || cfg.Assistant.UserRequestLimit != 25 || cfg.Assistant.UserRequestBurst != 6 || cfg.Assistant.GlobalRequestLimit != 100 || cfg.Assistant.GlobalRequestBurst != 12 {
 		t.Fatalf("assistant defaults were not applied: %+v", cfg.Assistant)
 	}
-	if cfg.Assistant.PtchanContext.Enabled || cfg.Assistant.PtchanContext.BaseURL != "https://ptchan.org" || cfg.Assistant.PtchanContext.GatewayURL != "http://ptchan-gateway:8080" || cfg.Assistant.PtchanContext.Timeout != 5*time.Second || cfg.Assistant.PtchanContext.CacheTTL != time.Minute || cfg.Assistant.PtchanContext.MaxReplies != 10 || cfg.Assistant.PtchanContext.MaxContextRunes != 8000 {
+	if cfg.Assistant.PtchanContext.Enabled || cfg.Assistant.PtchanContext.BaseURL != "https://ptchan.org" || cfg.Assistant.PtchanContext.GatewayURL != "http://ptchan-gateway:8080" || cfg.Assistant.PtchanContext.Timeout != 5*time.Second || cfg.Assistant.PtchanContext.CacheTTL != time.Minute || cfg.Assistant.PtchanContext.MaxReplies != 25 || cfg.Assistant.PtchanContext.MaxContextRunes != 24000 {
 		t.Fatalf("ptchan context defaults were not applied: %+v", cfg.Assistant.PtchanContext)
 	}
 	if cfg.Assistant.Trace.Enabled || cfg.Assistant.Trace.Dir != "data/traces" || cfg.Assistant.Trace.MaxFiles != 100 {
@@ -206,8 +205,8 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 		{name: "zero global limit", old: "global_limit = 100", replacement: "global_limit = 0", want: "assistant.rate_limit.global_burst"},
 		{name: "zero global burst", old: "global_burst = 12", replacement: "global_burst = 0", want: "assistant.rate_limit.global_burst"},
 		{name: "global burst above limit", old: "global_burst = 12", replacement: "global_burst = 101", want: "assistant.rate_limit.global_burst"},
-		{name: "zero ptchan context replies", old: "max_replies = 10", replacement: "max_replies = 0", want: "assistant.ptchan_context.max_replies"},
-		{name: "zero ptchan context runes", old: "max_context_runes = 8000", replacement: "max_context_runes = 0", want: "assistant.ptchan_context.max_context_runes"},
+		{name: "zero ptchan context replies", old: "max_replies = 25", replacement: "max_replies = 0", want: "assistant.ptchan_context.max_replies"},
+		{name: "zero ptchan context runes", old: "max_context_runes = 24000", replacement: "max_context_runes = 0", want: "assistant.ptchan_context.max_context_runes"},
 		{name: "invalid ptchan context timeout", old: `timeout = "5s"`, replacement: `timeout = "later"`, want: "assistant.ptchan_context.timeout"},
 		{name: "invalid ptchan context cache ttl", old: `cache_ttl = "60s"`, replacement: `cache_ttl = "later"`, want: "assistant.ptchan_context.cache_ttl"},
 		{name: "zero assistant trace files", old: "max_files = 100", replacement: "max_files = 0", want: "assistant.trace.max_files"},
@@ -354,7 +353,6 @@ func TestValidateRunUsesSelectedComponentDependencies(t *testing.T) {
 			DiscussionChatID: 2,
 			AllowAllUsers:    true,
 			SystemPrompt:     "Be useful.",
-			ChatPrompt:       "Keep group context separate.",
 		},
 		DeepSeek: DeepSeekConfig{APIKey: "key"},
 		Gateway:  GatewayConfig{ConsumerName: "martie", Secret: "gateway-secret"},
@@ -380,7 +378,6 @@ func TestValidateRunUsesSelectedComponentDependencies(t *testing.T) {
 		{name: "streams require channels", components: []ComponentName{componentStreams}, change: func(cfg *Config) { cfg.Streams.Channels = nil }, want: "at least one channel"},
 		{name: "assistant requires name", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.Name = "" }, want: "name is required"},
 		{name: "assistant requires prompt", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.SystemPrompt = "" }, want: "system_prompt"},
-		{name: "assistant requires chat prompt", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.ChatPrompt = "" }, want: "chat_prompt"},
 		{name: "assistant requires discussion chat", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.DiscussionChatID = 0 }, want: "discussion_chat_id"},
 		{name: "assistant requires access policy", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.AllowAllUsers = false }, want: "allowed_user_ids"},
 		{name: "assistant requires api key", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.DeepSeek.APIKey = "" }, want: "DEEPSEEK_API_KEY"},
@@ -429,10 +426,9 @@ const validConfig = `
 locale = "en"
 name = "Martie"
 
-[assistant]
-max_input_runes = 4096
-system_prompt = "Hello {{name}}."
-chat_prompt = "Keep group context separate."
+	[assistant]
+	max_input_runes = 4096
+	system_prompt = "Hello {{name}}."
 
 [assistant.memory]
 ttl = "10m"
@@ -451,8 +447,8 @@ base_url = "https://ptchan-context.example"
 gateway_url = "http://ptchan-gateway:8080"
 timeout = "5s"
 cache_ttl = "60s"
-max_replies = 10
-max_context_runes = 8000
+max_replies = 25
+max_context_runes = 24000
 
 [assistant.trace]
 enabled = false
