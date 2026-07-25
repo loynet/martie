@@ -58,13 +58,11 @@ type AssistantTraceConfig struct {
 }
 
 type PtchanContextConfig struct {
-	Enabled         bool
-	BaseURL         string
-	GatewayURL      string
-	Timeout         time.Duration
-	CacheTTL        time.Duration
-	MaxReplies      int
-	MaxContextRunes int
+	Enabled    bool
+	BaseURL    string
+	GatewayURL string
+	Timeout    time.Duration
+	MaxReplies int
 }
 
 type DeepSeekConfig struct {
@@ -75,14 +73,14 @@ type DeepSeekConfig struct {
 }
 
 type GatewayConfig struct {
-	ConsumerName  string
-	Secret        string
-	Addr          string
-	Path          string
-	BaseURL       string
-	MinReplyPosts int
-	Filter        ptchan.Filter
-	PruneAfter    time.Duration
+	IntegrationName string
+	Secret          string
+	Addr            string
+	Path            string
+	BaseURL         string
+	MinReplyPosts   int
+	Filter          ptchan.Filter
+	PruneAfter      time.Duration
 }
 
 type StreamsConfig struct {
@@ -155,13 +153,11 @@ type fileAssistantTrace struct {
 }
 
 type filePtchanContext struct {
-	Enabled         bool   `toml:"enabled"`
-	BaseURL         string `toml:"base_url"`
-	GatewayURL      string `toml:"gateway_url"`
-	Timeout         string `toml:"timeout"`
-	CacheTTL        string `toml:"cache_ttl"`
-	MaxReplies      int    `toml:"max_replies"`
-	MaxContextRunes int    `toml:"max_context_runes"`
+	Enabled    bool   `toml:"enabled"`
+	BaseURL    string `toml:"base_url"`
+	GatewayURL string `toml:"gateway_url"`
+	Timeout    string `toml:"timeout"`
+	MaxReplies int    `toml:"max_replies"`
 }
 
 type fileMemoryConfig struct {
@@ -184,7 +180,7 @@ type fileDeepSeekConfig struct {
 }
 
 type fileGatewayConfig struct {
-	ConsumerName    string   `toml:"consumer_name"`
+	IntegrationName string   `toml:"integration_name"`
 	Addr            string   `toml:"addr"`
 	Path            string   `toml:"path"`
 	BaseURL         string   `toml:"base_url"`
@@ -218,19 +214,8 @@ type fileStreamConfig struct {
 	PageURL  string `toml:"page_url"`
 }
 
-func LoadConfig() (Config, error) {
-	path := strings.TrimSpace(os.Getenv("CONFIG_FILE"))
-	if path == "" {
-		return Config{}, fmt.Errorf("CONFIG_FILE is required")
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return Config{}, fmt.Errorf("open config %q: %w", path, err)
-	}
-	defer file.Close()
-
-	raw := fileConfig{
+func defaultFileConfig() fileConfig {
+	return fileConfig{
 		Locale: string(localization.English),
 		Assistant: fileAssistantConfig{
 			MaxInputRunes: 4096,
@@ -246,12 +231,10 @@ func LoadConfig() (Config, error) {
 				GlobalBurst: 12,
 			},
 			PtchanContext: filePtchanContext{
-				BaseURL:         "https://ptchan.org",
-				GatewayURL:      "http://ptchan-gateway:8080",
-				Timeout:         "5s",
-				CacheTTL:        "60s",
-				MaxReplies:      25,
-				MaxContextRunes: 24000,
+				BaseURL:    "https://ptchan.org",
+				GatewayURL: "http://ptchan-gateway:8080",
+				Timeout:    "5s",
+				MaxReplies: defaultPtchanMaxReplies,
 			},
 			Trace: fileAssistantTrace{MaxFiles: 100},
 		},
@@ -261,13 +244,13 @@ func LoadConfig() (Config, error) {
 			Timeout:   "60s",
 		},
 		Gateway: fileGatewayConfig{
-			ConsumerName:  "martie",
-			Addr:          ":8081",
-			Path:          "/internal/ptchan/events",
-			BaseURL:       "https://ptchan.org",
-			MinReplyPosts: 10,
-			MaxThreadAge:  "0s",
-			PruneAfter:    "720h",
+			IntegrationName: "martie",
+			Addr:            ":8081",
+			Path:            "/internal/ptchan/events",
+			BaseURL:         "https://ptchan.org",
+			MinReplyPosts:   10,
+			MaxThreadAge:    "0s",
+			PruneAfter:      "720h",
 		},
 		Runtime: fileRuntimeConfig{
 			Logging: fileLoggingConfig{
@@ -277,6 +260,21 @@ func LoadConfig() (Config, error) {
 		},
 		Streams: fileStreamsConfig{EndMissThreshold: 2, PollInterval: "60s"},
 	}
+}
+
+func LoadConfig() (Config, error) {
+	path := strings.TrimSpace(os.Getenv("CONFIG_FILE"))
+	if path == "" {
+		return Config{}, fmt.Errorf("CONFIG_FILE is required")
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("open config %q: %w", path, err)
+	}
+	defer file.Close()
+
+	raw := defaultFileConfig()
 	decoder := toml.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&raw); err != nil {
@@ -315,11 +313,10 @@ func LoadConfig() (Config, error) {
 			},
 			HistoryExchanges: raw.Assistant.Memory.HistoryExchanges,
 			PtchanContext: PtchanContextConfig{
-				Enabled:         raw.Assistant.PtchanContext.Enabled,
-				BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.BaseURL), "/"),
-				GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.GatewayURL), "/"),
-				MaxReplies:      raw.Assistant.PtchanContext.MaxReplies,
-				MaxContextRunes: raw.Assistant.PtchanContext.MaxContextRunes,
+				Enabled:    raw.Assistant.PtchanContext.Enabled,
+				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.BaseURL), "/"),
+				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.GatewayURL), "/"),
+				MaxReplies: raw.Assistant.PtchanContext.MaxReplies,
 			},
 		},
 		DeepSeek: DeepSeekConfig{
@@ -328,12 +325,12 @@ func LoadConfig() (Config, error) {
 			MaxTokens: raw.DeepSeek.MaxTokens,
 		},
 		Gateway: GatewayConfig{
-			ConsumerName:  strings.TrimSpace(raw.Gateway.ConsumerName),
-			Secret:        strings.TrimSpace(os.Getenv(gatewaySecretEnv(raw.Gateway.ConsumerName))),
-			Addr:          strings.TrimSpace(raw.Gateway.Addr),
-			Path:          cleanGatewayPath(raw.Gateway.Path),
-			BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Gateway.BaseURL), "/"),
-			MinReplyPosts: raw.Gateway.MinReplyPosts,
+			IntegrationName: strings.TrimSpace(raw.Gateway.IntegrationName),
+			Secret:          strings.TrimSpace(os.Getenv(integrationSecretEnv(raw.Gateway.IntegrationName))),
+			Addr:            strings.TrimSpace(raw.Gateway.Addr),
+			Path:            cleanGatewayPath(raw.Gateway.Path),
+			BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Gateway.BaseURL), "/"),
+			MinReplyPosts:   raw.Gateway.MinReplyPosts,
 			Filter: ptchan.Filter{
 				BoardDenylist:   raw.Gateway.BoardDenylist,
 				KeywordDenylist: raw.Gateway.KeywordDenylist,
@@ -360,9 +357,6 @@ func LoadConfig() (Config, error) {
 	if cfg.Assistant.PtchanContext.MaxReplies <= 0 {
 		return Config{}, fmt.Errorf("assistant.ptchan_context.max_replies must be positive")
 	}
-	if cfg.Assistant.PtchanContext.MaxContextRunes <= 0 {
-		return Config{}, fmt.Errorf("assistant.ptchan_context.max_context_runes must be positive")
-	}
 	if cfg.Assistant.PtchanContext.Enabled && cfg.Assistant.PtchanContext.BaseURL == "" {
 		return Config{}, fmt.Errorf("assistant.ptchan_context.base_url is required when enabled")
 	}
@@ -378,8 +372,8 @@ func LoadConfig() (Config, error) {
 	if cfg.DeepSeek.MaxTokens <= 0 {
 		return Config{}, fmt.Errorf("deepseek.max_tokens must be positive")
 	}
-	if cfg.Gateway.ConsumerName == "" {
-		return Config{}, fmt.Errorf("gateway.consumer_name is required")
+	if cfg.Gateway.IntegrationName == "" {
+		return Config{}, fmt.Errorf("gateway.integration_name is required")
 	}
 	if cfg.Gateway.Addr == "" {
 		return Config{}, fmt.Errorf("gateway.addr is required")
@@ -441,9 +435,6 @@ func LoadConfig() (Config, error) {
 	if cfg.Assistant.PtchanContext.Timeout, err = positiveDuration("assistant.ptchan_context.timeout", raw.Assistant.PtchanContext.Timeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.Assistant.PtchanContext.CacheTTL, err = positiveDuration("assistant.ptchan_context.cache_ttl", raw.Assistant.PtchanContext.CacheTTL); err != nil {
-		return Config{}, err
-	}
 	if cfg.DeepSeek.Timeout, err = positiveDuration("deepseek.timeout", raw.DeepSeek.Timeout); err != nil {
 		return Config{}, err
 	}
@@ -483,7 +474,7 @@ func (c Config) ValidateRun() error {
 		return fmt.Errorf("streams requires at least one channel")
 	}
 	if c.runs(componentGateway) && c.Gateway.Secret == "" {
-		return fmt.Errorf("%s is required for gateway", gatewaySecretEnv(c.Gateway.ConsumerName))
+		return fmt.Errorf("%s is required for gateway", integrationSecretEnv(c.Gateway.IntegrationName))
 	}
 	if !c.runs(componentAssistant) {
 		return nil
@@ -504,7 +495,7 @@ func (c Config) ValidateRun() error {
 		return fmt.Errorf("DEEPSEEK_API_KEY is required for assistant")
 	}
 	if c.Assistant.PtchanContext.Enabled && c.Gateway.Secret == "" {
-		return fmt.Errorf("%s is required for assistant ptchan context", gatewaySecretEnv(c.Gateway.ConsumerName))
+		return fmt.Errorf("%s is required for assistant ptchan context", integrationSecretEnv(c.Gateway.IntegrationName))
 	}
 	return nil
 }
@@ -516,7 +507,7 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func gatewaySecretEnv(name string) string {
+func integrationSecretEnv(name string) string {
 	normalized := strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' {
 			return r - 'a' + 'A'
@@ -526,7 +517,7 @@ func gatewaySecretEnv(name string) string {
 		}
 		return '_'
 	}, strings.TrimSpace(name))
-	return "PTCHAN_WEBHOOK_" + normalized + "_SECRET"
+	return "PTCHAN_INTEGRATION_" + normalized + "_SECRET"
 }
 
 func cleanGatewayPath(path string) string {

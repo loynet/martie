@@ -17,31 +17,6 @@ import (
 	"martie/internal/telegram"
 )
 
-type streamPoller struct {
-	channels         []miau.Channel
-	format           telegram.Formatter
-	endMissThreshold int
-	chatID           int64
-	store            streamStore
-	client           streamClient
-	telegram         messageSender
-	metrics          *metrics
-	logger           *slog.Logger
-}
-
-type streamClient interface {
-	IsLive(context.Context, miau.Channel) (bool, error)
-}
-
-type streamStore interface {
-	GetStreamState(context.Context, string) (state.StreamState, bool, error)
-	UpsertStreamState(context.Context, state.StreamState) error
-}
-
-type messageSender interface {
-	Send(context.Context, telegram.SendRequest) error
-}
-
 type component struct {
 	name ComponentName
 	run  func(context.Context) error
@@ -85,15 +60,14 @@ func Run(
 	}
 	if cfg.runs(componentGateway) {
 		gateway := gatewayConsumer{
-			cfg:       cfg.Gateway,
-			format:    formatter,
-			chatID:    cfg.Telegram.NotificationChatID,
-			store:     store,
-			telegram:  telegramClient,
-			metrics:   metrics,
-			logger:    logger.With("component", componentGateway),
-			nowFunc:   time.Now,
-			consumeMu: &sync.Mutex{},
+			cfg:      cfg.Gateway,
+			format:   formatter,
+			chatID:   cfg.Telegram.NotificationChatID,
+			store:    store,
+			telegram: telegramClient,
+			metrics:  metrics,
+			logger:   logger.With("component", componentGateway),
+			nowFunc:  time.Now,
 		}
 		components = append(components, component{name: componentGateway, run: gateway.run})
 	}
@@ -105,7 +79,7 @@ func Run(
 		if cfg.Assistant.PtchanContext.Enabled {
 			contextClient = gateway.NewContextClient(
 				cfg.Assistant.PtchanContext.GatewayURL,
-				cfg.Gateway.ConsumerName,
+				cfg.Gateway.IntegrationName,
 				cfg.Gateway.Secret,
 				cfg.Assistant.PtchanContext.Timeout,
 				ptchanGatewayContextLimit,

@@ -49,10 +49,8 @@ enabled = false
 base_url = "https://ptchan.org"
 gateway_url = "http://ptchan-gateway:8080"
 timeout = "5s"
-cache_ttl = "60s"
 # Render the OP when available plus this many focused or recent non-OP posts.
 max_replies = 25
-max_context_runes = 24000
 
 [assistant.trace]
 # Write one human-readable trace for each assistant interaction sent to the model.
@@ -69,9 +67,9 @@ max_tokens = 500
 timeout = "60s"
 
 [gateway]
-# Consumer name configured in ptchan-gateway. The matching secret is read from
-# PTCHAN_WEBHOOK_<CONSUMER_NAME>_SECRET, so "martie" uses PTCHAN_WEBHOOK_MARTIE_SECRET.
-consumer_name = "martie"
+# Integration name configured in ptchan-gateway. The matching secret is read from
+# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses PTCHAN_INTEGRATION_MARTIE_SECRET.
+integration_name = "martie"
 # Address and path where Martie accepts signed gateway webhooks.
 addr = ":8081"
 path = "/internal/ptchan/events"

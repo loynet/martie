@@ -43,9 +43,7 @@ enabled = true
 base_url = "https://ptchan.example.com/"
 gateway_url = "http://gateway.example.com/"
 timeout = "3s"
-cache_ttl = "45s"
 max_replies = 4
-max_context_runes = 2000
 
 [assistant.trace]
 enabled = true
@@ -57,7 +55,7 @@ max_tokens = 300
 timeout = "45s"
 
 [gateway]
-consumer_name = "martie-test"
+integration_name = "martie-test"
 addr = ":8082"
 path = "internal/gateway/events"
 base_url = "https://gateway-links.example.com/"
@@ -87,7 +85,7 @@ page_url = "https://example.com/live"
 	t.Setenv("CONFIG_FILE", path)
 	t.Setenv("TELEGRAM_BOT_TOKEN", " token ")
 	t.Setenv("DEEPSEEK_API_KEY", " key ")
-	t.Setenv("PTCHAN_WEBHOOK_MARTIE_TEST_SECRET", " gateway-secret ")
+	t.Setenv("PTCHAN_INTEGRATION_MARTIE_TEST_SECRET", " gateway-secret ")
 	t.Setenv("SQLITE_PATH", "data/test.db")
 	t.Setenv("MARTIE_ASSISTANT_TRACE_DIR", "data/test-traces")
 
@@ -116,7 +114,7 @@ page_url = "https://example.com/live"
 	if cfg.Assistant.HistoryExchanges != 6 || cfg.Assistant.MaxInputRunes != 2000 || !cfg.Assistant.LogMemory || cfg.Assistant.UserRequestLimit != 20 || cfg.Assistant.UserRequestBurst != 4 || cfg.Assistant.GlobalRequestLimit != 80 || cfg.Assistant.GlobalRequestBurst != 10 {
 		t.Fatalf("assistant config = %+v", cfg.Assistant)
 	}
-	if !cfg.Assistant.PtchanContext.Enabled || cfg.Assistant.PtchanContext.BaseURL != "https://ptchan.example.com" || cfg.Assistant.PtchanContext.GatewayURL != "http://gateway.example.com" || cfg.Assistant.PtchanContext.Timeout != 3*time.Second || cfg.Assistant.PtchanContext.CacheTTL != 45*time.Second || cfg.Assistant.PtchanContext.MaxReplies != 4 || cfg.Assistant.PtchanContext.MaxContextRunes != 2000 {
+	if !cfg.Assistant.PtchanContext.Enabled || cfg.Assistant.PtchanContext.BaseURL != "https://ptchan.example.com" || cfg.Assistant.PtchanContext.GatewayURL != "http://gateway.example.com" || cfg.Assistant.PtchanContext.Timeout != 3*time.Second || cfg.Assistant.PtchanContext.MaxReplies != 4 {
 		t.Fatalf("ptchan context config = %+v", cfg.Assistant.PtchanContext)
 	}
 	if !cfg.Assistant.Trace.Enabled || cfg.Assistant.Trace.Dir != "data/test-traces" || cfg.Assistant.Trace.MaxFiles != 25 {
@@ -125,7 +123,7 @@ page_url = "https://example.com/live"
 	if cfg.DeepSeek.Model != "deepseek-test" || cfg.DeepSeek.MaxTokens != 300 {
 		t.Fatalf("deepseek config = %+v", cfg.DeepSeek)
 	}
-	if cfg.Gateway.ConsumerName != "martie-test" || cfg.Gateway.Secret != "gateway-secret" || cfg.Gateway.Addr != ":8082" || cfg.Gateway.Path != "/internal/gateway/events" || cfg.Gateway.BaseURL != "https://gateway-links.example.com" || cfg.Gateway.MinReplyPosts != 6 || cfg.Gateway.Filter.MaxThreadAge != 12*time.Hour || cfg.Gateway.PruneAfter != 48*time.Hour || len(cfg.Gateway.Filter.BoardDenylist) != 1 || cfg.Gateway.Filter.BoardDenylist[0] != "x" || len(cfg.Gateway.Filter.KeywordDenylist) != 1 || cfg.Gateway.Filter.KeywordDenylist[0] != "y" {
+	if cfg.Gateway.IntegrationName != "martie-test" || cfg.Gateway.Secret != "gateway-secret" || cfg.Gateway.Addr != ":8082" || cfg.Gateway.Path != "/internal/gateway/events" || cfg.Gateway.BaseURL != "https://gateway-links.example.com" || cfg.Gateway.MinReplyPosts != 6 || cfg.Gateway.Filter.MaxThreadAge != 12*time.Hour || cfg.Gateway.PruneAfter != 48*time.Hour || len(cfg.Gateway.Filter.BoardDenylist) != 1 || cfg.Gateway.Filter.BoardDenylist[0] != "x" || len(cfg.Gateway.Filter.KeywordDenylist) != 1 || cfg.Gateway.Filter.KeywordDenylist[0] != "y" {
 		t.Fatalf("gateway config = %+v", cfg.Gateway)
 	}
 	if cfg.Runtime.MetricsAddr != ":9090" || cfg.Storage.SQLitePath != "data/test.db" {
@@ -160,13 +158,13 @@ system_prompt = "You are {{name}}."
 	if cfg.Locale != localization.English || !cfg.Assistant.AllowAllUsers || cfg.Assistant.MaxInputRunes != 4096 || cfg.Assistant.ConversationTTL != 10*time.Minute || cfg.Assistant.HistoryExchanges != 8 || cfg.Assistant.RateLimitWindow != time.Hour || cfg.Assistant.UserRequestLimit != 25 || cfg.Assistant.UserRequestBurst != 6 || cfg.Assistant.GlobalRequestLimit != 100 || cfg.Assistant.GlobalRequestBurst != 12 {
 		t.Fatalf("assistant defaults were not applied: %+v", cfg.Assistant)
 	}
-	if cfg.Assistant.PtchanContext.Enabled || cfg.Assistant.PtchanContext.BaseURL != "https://ptchan.org" || cfg.Assistant.PtchanContext.GatewayURL != "http://ptchan-gateway:8080" || cfg.Assistant.PtchanContext.Timeout != 5*time.Second || cfg.Assistant.PtchanContext.CacheTTL != time.Minute || cfg.Assistant.PtchanContext.MaxReplies != 25 || cfg.Assistant.PtchanContext.MaxContextRunes != 24000 {
+	if cfg.Assistant.PtchanContext.Enabled || cfg.Assistant.PtchanContext.BaseURL != "https://ptchan.org" || cfg.Assistant.PtchanContext.GatewayURL != "http://ptchan-gateway:8080" || cfg.Assistant.PtchanContext.Timeout != 5*time.Second || cfg.Assistant.PtchanContext.MaxReplies != defaultPtchanMaxReplies {
 		t.Fatalf("ptchan context defaults were not applied: %+v", cfg.Assistant.PtchanContext)
 	}
 	if cfg.Assistant.Trace.Enabled || cfg.Assistant.Trace.Dir != "data/traces" || cfg.Assistant.Trace.MaxFiles != 100 {
 		t.Fatalf("assistant trace defaults were not applied: %+v", cfg.Assistant.Trace)
 	}
-	if cfg.DeepSeek.Model != "deepseek-v4-flash" || cfg.DeepSeek.MaxTokens != 500 || cfg.DeepSeek.Timeout != time.Minute || cfg.Gateway.ConsumerName != "martie" || cfg.Gateway.Addr != ":8081" || cfg.Gateway.Path != "/internal/ptchan/events" || cfg.Gateway.BaseURL != "https://ptchan.org" || cfg.Gateway.MinReplyPosts != 10 || cfg.Gateway.Filter.MaxThreadAge != 0 || cfg.Gateway.PruneAfter != 720*time.Hour || cfg.Streams.PollInterval != time.Minute || cfg.Runtime.Logging.Level != slog.LevelInfo || cfg.Runtime.Logging.Format != LogText || cfg.Streams.EndMissThreshold != 2 || cfg.Storage.SQLitePath != "data/bot.db" {
+	if cfg.DeepSeek.Model != "deepseek-v4-flash" || cfg.DeepSeek.MaxTokens != 500 || cfg.DeepSeek.Timeout != time.Minute || cfg.Gateway.IntegrationName != "martie" || cfg.Gateway.Addr != ":8081" || cfg.Gateway.Path != "/internal/ptchan/events" || cfg.Gateway.BaseURL != "https://ptchan.org" || cfg.Gateway.MinReplyPosts != 10 || cfg.Gateway.Filter.MaxThreadAge != 0 || cfg.Gateway.PruneAfter != 720*time.Hour || cfg.Streams.PollInterval != time.Minute || cfg.Runtime.Logging.Level != slog.LevelInfo || cfg.Runtime.Logging.Format != LogText || cfg.Streams.EndMissThreshold != 2 || cfg.Storage.SQLitePath != "data/bot.db" {
 		t.Fatalf("defaults were not applied: %+v", cfg)
 	}
 	if len(cfg.Runtime.Components) != 0 {
@@ -206,13 +204,11 @@ func TestLoadConfigRejectsInvalidValues(t *testing.T) {
 		{name: "zero global burst", old: "global_burst = 12", replacement: "global_burst = 0", want: "assistant.rate_limit.global_burst"},
 		{name: "global burst above limit", old: "global_burst = 12", replacement: "global_burst = 101", want: "assistant.rate_limit.global_burst"},
 		{name: "zero ptchan context replies", old: "max_replies = 25", replacement: "max_replies = 0", want: "assistant.ptchan_context.max_replies"},
-		{name: "zero ptchan context runes", old: "max_context_runes = 24000", replacement: "max_context_runes = 0", want: "assistant.ptchan_context.max_context_runes"},
 		{name: "invalid ptchan context timeout", old: `timeout = "5s"`, replacement: `timeout = "later"`, want: "assistant.ptchan_context.timeout"},
-		{name: "invalid ptchan context cache ttl", old: `cache_ttl = "60s"`, replacement: `cache_ttl = "later"`, want: "assistant.ptchan_context.cache_ttl"},
 		{name: "zero assistant trace files", old: "max_files = 100", replacement: "max_files = 0", want: "assistant.trace.max_files"},
 		{name: "empty model", old: `model = "deepseek-v4-flash"`, replacement: `model = " "`, want: "deepseek.model"},
 		{name: "zero max tokens", old: "max_tokens = 500", replacement: "max_tokens = 0", want: "deepseek.max_tokens"},
-		{name: "empty gateway consumer", old: `consumer_name = "martie"`, replacement: `consumer_name = " "`, want: "gateway.consumer_name"},
+		{name: "empty gateway integration", old: `integration_name = "martie"`, replacement: `integration_name = " "`, want: "gateway.integration_name"},
 		{name: "empty gateway addr", old: `addr = ":8081"`, replacement: `addr = " "`, want: "gateway.addr"},
 		{name: "empty gateway path", old: `path = "/internal/ptchan/events"`, replacement: `path = " "`, want: "gateway.path"},
 		{name: "empty gateway URL", old: `base_url = "https://gateway.example"`, replacement: `base_url = " "`, want: "gateway.base_url"},
@@ -355,7 +351,7 @@ func TestValidateRunUsesSelectedComponentDependencies(t *testing.T) {
 			SystemPrompt:     "Be useful.",
 		},
 		DeepSeek: DeepSeekConfig{APIKey: "key"},
-		Gateway:  GatewayConfig{ConsumerName: "martie", Secret: "gateway-secret"},
+		Gateway:  GatewayConfig{IntegrationName: "martie", Secret: "gateway-secret"},
 		Streams:  StreamsConfig{Channels: []miau.Channel{{Key: "live", ProbeURL: "https://stream.example.com", PageURL: "https://example.com"}}},
 	}
 
@@ -374,7 +370,7 @@ func TestValidateRunUsesSelectedComponentDependencies(t *testing.T) {
 		{name: "assistant only", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Telegram.NotificationChatID = 0 }},
 		{name: "all components require Telegram", components: []ComponentName{componentGateway}, change: func(cfg *Config) { cfg.Telegram.BotToken = "" }, want: "TELEGRAM_BOT_TOKEN"},
 		{name: "gateway requires notification chat", components: []ComponentName{componentGateway}, change: func(cfg *Config) { cfg.Telegram.NotificationChatID = 0 }, want: "notification_chat_id"},
-		{name: "gateway requires secret", components: []ComponentName{componentGateway}, change: func(cfg *Config) { cfg.Gateway.Secret = "" }, want: "PTCHAN_WEBHOOK_MARTIE_SECRET"},
+		{name: "gateway requires secret", components: []ComponentName{componentGateway}, change: func(cfg *Config) { cfg.Gateway.Secret = "" }, want: "PTCHAN_INTEGRATION_MARTIE_SECRET"},
 		{name: "streams require channels", components: []ComponentName{componentStreams}, change: func(cfg *Config) { cfg.Streams.Channels = nil }, want: "at least one channel"},
 		{name: "assistant requires name", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.Name = "" }, want: "name is required"},
 		{name: "assistant requires prompt", components: []ComponentName{componentAssistant}, change: func(cfg *Config) { cfg.Assistant.SystemPrompt = "" }, want: "system_prompt"},
@@ -384,7 +380,7 @@ func TestValidateRunUsesSelectedComponentDependencies(t *testing.T) {
 		{name: "assistant ptchan context requires gateway secret", components: []ComponentName{componentAssistant}, change: func(cfg *Config) {
 			cfg.Assistant.PtchanContext.Enabled = true
 			cfg.Gateway.Secret = ""
-		}, want: "PTCHAN_WEBHOOK_MARTIE_SECRET"},
+		}, want: "PTCHAN_INTEGRATION_MARTIE_SECRET"},
 	}
 
 	for _, test := range tests {
@@ -446,9 +442,7 @@ enabled = false
 base_url = "https://ptchan-context.example"
 gateway_url = "http://ptchan-gateway:8080"
 timeout = "5s"
-cache_ttl = "60s"
 max_replies = 25
-max_context_runes = 24000
 
 [assistant.trace]
 enabled = false
@@ -460,7 +454,7 @@ max_tokens = 500
 timeout = "60s"
 
 [gateway]
-consumer_name = "martie"
+integration_name = "martie"
 addr = ":8081"
 path = "/internal/ptchan/events"
 base_url = "https://gateway.example"

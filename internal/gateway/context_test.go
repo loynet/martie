@@ -11,10 +11,10 @@ import (
 func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	var gotRequest *http.Request
 	client := &ContextClient{
-		baseURL:  "http://gateway.test",
-		consumer: "martie",
-		secret:   "secret",
-		limit:    3,
+		baseURL:     "http://gateway.test",
+		integration: "martie",
+		secret:      "secret",
+		limit:       3,
 		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			gotRequest = req
 			return &http.Response{
@@ -27,7 +27,7 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 					"truncated": true,
 					"posts": [
 						{"board": "i", "thread_id": 100, "post_id": 100, "url": "https://ptchan.test/i/thread/100.html#100", "date": "2026-07-19T12:00:00Z", "message": "op"},
-						{"board": "i", "thread_id": 100, "post_id": 101, "url": "https://ptchan.test/i/thread/100.html#101", "date": "2026-07-19T12:01:00Z", "message": "reply", "references": [{"board": "i", "thread_id": 100, "post_id": 100}]}
+						{"board": "i", "thread_id": 100, "post_id": 101, "url": "https://ptchan.test/i/thread/100.html#101", "date": "2026-07-19T12:01:00Z", "message": "reply", "origin": {"kind": "integration", "name": "martie"}, "references": [{"board": "i", "thread_id": 100, "post_id": 100}]}
 					]
 				}`)),
 			}, nil
@@ -41,13 +41,18 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	if gotRequest == nil {
 		t.Fatal("request was not sent")
 	}
-	if gotRequest.URL.Path != "/consumer/v1/threads/i/100" || gotRequest.URL.RawQuery != "limit=3" {
+	if gotRequest.URL.Path != "/integration/v1/threads/i/100" || gotRequest.URL.RawQuery != "limit=3" {
 		t.Fatalf("url = %s", gotRequest.URL.String())
 	}
-	if gotRequest.Header.Get("x-ptchan-consumer") != "martie" || gotRequest.Header.Get("x-ptchan-timestamp") == "" || gotRequest.Header.Get("x-ptchan-signature") == "" {
+	timestamp := gotRequest.Header.Get("x-ptchan-timestamp")
+	if gotRequest.Header.Get("x-ptchan-integration") != "martie" || timestamp == "" || gotRequest.Header.Get("x-ptchan-signature") == "" {
 		t.Fatalf("missing signed context headers: %v", gotRequest.Header)
 	}
-	if thread.Board != "i" || thread.ThreadID != 100 || !thread.Truncated || len(thread.Posts) != 2 || thread.Posts[0].Message != "op" || len(thread.Posts[1].References) != 1 {
+	wantSignature := contextSignature("secret", timestamp, http.MethodGet, "/integration/v1/threads/i/100?limit=3")
+	if got := gotRequest.Header.Get("x-ptchan-signature"); got != wantSignature {
+		t.Fatalf("signature = %q, want %q", got, wantSignature)
+	}
+	if thread.Board != "i" || thread.ThreadID != 100 || !thread.Truncated || len(thread.Posts) != 2 || thread.Posts[0].Message != "op" || thread.Posts[1].Origin == nil || thread.Posts[1].Origin.Name != "martie" || len(thread.Posts[1].References) != 1 {
 		t.Fatalf("thread = %+v", thread)
 	}
 }

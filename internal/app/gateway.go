@@ -30,10 +30,10 @@ type gatewayConsumer struct {
 	logger      *slog.Logger
 	nowFunc     func() time.Time
 	bootstrapAt time.Time
-	consumeMu   *sync.Mutex
+	consumeMu   sync.Mutex
 }
 
-func (g gatewayConsumer) run(ctx context.Context) error {
+func (g *gatewayConsumer) run(ctx context.Context) error {
 	bootstrapAt, err := g.store.EnsureGatewayBootstrapAt(ctx, g.nowFunc())
 	if err != nil {
 		return fmt.Errorf("load gateway bootstrap watermark: %w", err)
@@ -88,7 +88,7 @@ func (g gatewayConsumer) run(ctx context.Context) error {
 	}
 }
 
-func (g gatewayConsumer) handleEvent(w http.ResponseWriter, r *http.Request) {
+func (g *gatewayConsumer) handleEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -132,17 +132,9 @@ func (g gatewayConsumer) handleEvent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (g gatewayConsumer) consumeEvent(ctx context.Context, event gateway.Event) error {
+func (g *gatewayConsumer) consumeEvent(ctx context.Context, event gateway.Event) error {
 	g.consumeMu.Lock()
 	defer g.consumeMu.Unlock()
-
-	processed, err := g.store.GatewayEventProcessed(ctx, event.EventID)
-	if err != nil {
-		return err
-	}
-	if processed {
-		return nil
-	}
 
 	now := g.nowFunc().UTC()
 	record, found, err := g.store.GetThread(ctx, gatewayThreadKey(event.Post.Board, event.Post.ThreadID))
@@ -150,6 +142,23 @@ func (g gatewayConsumer) consumeEvent(ctx context.Context, event gateway.Event) 
 		return fmt.Errorf("load gateway thread: %w", err)
 	}
 
+	record = g.threadRecordForEvent(record, found, event, now)
+	notification := g.notificationForEvent(record, event, now)
+	if notification != nil {
+		record.NotifiedNewAt = &now
+	}
+
+	queued, err := g.store.StoreGatewayEvent(ctx, event.EventID, record, notification, now)
+	if err != nil {
+		return err
+	}
+	if queued {
+		g.logger.Debug("gateway notification queued", "thread", record.ThreadID)
+	}
+	return nil
+}
+
+func (g *gatewayConsumer) threadRecordForEvent(record state.ThreadRecord, found bool, event gateway.Event, now time.Time) state.ThreadRecord {
 	postTime := event.Post.Date
 	if postTime.IsZero() {
 		postTime = now
@@ -186,45 +195,37 @@ func (g gatewayConsumer) consumeEvent(ctx context.Context, event gateway.Event) 
 		record.ReplyFiles += event.Post.AttachmentCount
 	}
 
-	var notification *state.GatewayNotification
-	if record.HasOP && !record.Ignored && record.NotifiedNewAt == nil && record.ReplyPosts >= g.cfg.MinReplyPosts {
-		notify := g.shouldNotify(event)
-		if notify {
-			message := g.format.ThreadNotification(g.cfg.BaseURL, telegram.ThreadNotice{
-				Board:      record.Board,
-				PostID:     record.PostID,
-				Date:       record.CreatedAt,
-				ReplyPosts: record.ReplyPosts,
-				ReplyFiles: record.ReplyFiles,
-			}, g.cfg.MinReplyPosts, now)
-			notification = &state.GatewayNotification{
-				ThreadID:  record.ThreadID,
-				ChatID:    g.chatID,
-				Text:      message.Text(),
-				ParseMode: message.ParseMode(),
-			}
-			record.NotifiedNewAt = &now
-		}
-	}
-
-	queued, err := g.store.StoreGatewayEvent(ctx, event.EventID, record, notification, now)
-	if err != nil {
-		return err
-	}
-	if queued {
-		g.logger.Debug("gateway notification queued", "thread", record.ThreadID)
-	}
-	return nil
+	return record
 }
 
-func (g gatewayConsumer) shouldNotify(event gateway.Event) bool {
+func (g *gatewayConsumer) notificationForEvent(record state.ThreadRecord, event gateway.Event, now time.Time) *state.GatewayNotification {
+	if !record.HasOP || record.Ignored || record.NotifiedNewAt != nil || record.ReplyPosts < g.cfg.MinReplyPosts || !g.shouldNotify(event) {
+		return nil
+	}
+
+	message := g.format.ThreadNotification(g.cfg.BaseURL, telegram.ThreadNotice{
+		Board:      record.Board,
+		PostID:     record.PostID,
+		Date:       record.CreatedAt,
+		ReplyPosts: record.ReplyPosts,
+		ReplyFiles: record.ReplyFiles,
+	}, g.cfg.MinReplyPosts, now)
+	return &state.GatewayNotification{
+		ThreadID:  record.ThreadID,
+		ChatID:    g.chatID,
+		Text:      message.Text(),
+		ParseMode: message.ParseMode(),
+	}
+}
+
+func (g *gatewayConsumer) shouldNotify(event gateway.Event) bool {
 	if g.bootstrapAt.IsZero() || event.ObservedAt.IsZero() {
 		return true
 	}
 	return !event.ObservedAt.Before(g.bootstrapAt)
 }
 
-func (g gatewayConsumer) deliverNotifications(ctx context.Context) {
+func (g *gatewayConsumer) deliverNotifications(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	cleanup := time.NewTicker(time.Hour)
@@ -242,7 +243,7 @@ func (g gatewayConsumer) deliverNotifications(ctx context.Context) {
 	}
 }
 
-func (g gatewayConsumer) deliverPendingNotifications(ctx context.Context) {
+func (g *gatewayConsumer) deliverPendingNotifications(ctx context.Context) {
 	notifications, err := g.store.PendingGatewayNotifications(ctx, 10, g.nowFunc())
 	if err != nil {
 		g.logger.Warn("load gateway notifications failed", "error", err)
@@ -261,14 +262,14 @@ func (g gatewayConsumer) deliverPendingNotifications(ctx context.Context) {
 			}
 			g.metrics.addNotifications(string(componentGateway), 1)
 			continue
-		} else {
-			attempts := notification.Attempts + 1
-			next := now.Add(gatewayNotificationBackoff(attempts))
-			if err := g.store.MarkGatewayNotificationFailed(ctx, notification.ID, attempts, next); err != nil {
-				g.logger.Warn("mark gateway notification failed failed", "id", notification.ID, "error", err)
-			}
-			g.logger.Warn("gateway notification delivery failed", "id", notification.ID, "attempts", attempts, "error", err)
 		}
+
+		attempts := notification.Attempts + 1
+		next := now.Add(gatewayNotificationBackoff(attempts))
+		if err := g.store.MarkGatewayNotificationFailed(ctx, notification.ID, attempts, next); err != nil {
+			g.logger.Warn("mark gateway notification failed", "id", notification.ID, "error", err)
+		}
+		g.logger.Warn("gateway notification delivery failed", "id", notification.ID, "attempts", attempts, "error", err)
 	}
 }
 
@@ -279,7 +280,7 @@ func gatewayNotificationBackoff(attempts int) time.Duration {
 	return time.Duration(1<<min(attempts-1, 6)) * time.Second
 }
 
-func (g gatewayConsumer) prune(ctx context.Context) {
+func (g *gatewayConsumer) prune(ctx context.Context) {
 	if g.cfg.PruneAfter == 0 {
 		return
 	}

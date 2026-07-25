@@ -20,6 +20,7 @@ func TestDecodeEvent(t *testing.T) {
 			"url": "https://ptchan.test/i/thread/100.html#101",
 			"date": "2026-07-19T12:00:00Z",
 			"message": "reply",
+			"origin": {"kind": "integration", "name": "martie"},
 			"attachment_count": 1,
 			"references": [{"board": "i", "thread_id": 100, "post_id": 100}]
 		}
@@ -27,7 +28,7 @@ func TestDecodeEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event.Kind != KindPostCreated || event.Post.Board != "i" || event.Post.PostID != 101 || len(event.Post.References) != 1 {
+	if event.Kind != KindPostCreated || event.Post.Board != "i" || event.Post.PostID != 101 || event.Post.Origin == nil || event.Post.Origin.Name != "martie" || len(event.Post.References) != 1 {
 		t.Fatalf("event = %+v", event)
 	}
 }

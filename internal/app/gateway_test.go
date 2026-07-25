@@ -390,20 +390,19 @@ func testGatewayStore(t *testing.T) *state.Store {
 func testGatewayConsumer(store *state.Store, sender *fakeMessageSender, now time.Time) gatewayConsumer {
 	return gatewayConsumer{
 		cfg: GatewayConfig{
-			ConsumerName:  "martie",
-			Secret:        "secret",
-			Addr:          ":0",
-			Path:          "/internal/ptchan/events",
-			BaseURL:       "https://ptchan.org",
-			MinReplyPosts: 2,
+			IntegrationName: "martie",
+			Secret:          "secret",
+			Addr:            ":0",
+			Path:            "/internal/ptchan/events",
+			BaseURL:         "https://ptchan.org",
+			MinReplyPosts:   2,
 		},
-		format:    telegram.NewFormatter(localization.New(localization.English)),
-		chatID:    123,
-		store:     store,
-		telegram:  sender,
-		metrics:   newMetrics(),
-		logger:    discardLogger(),
-		nowFunc:   func() time.Time { return now },
-		consumeMu: &sync.Mutex{},
+		format:   telegram.NewFormatter(localization.New(localization.English)),
+		chatID:   123,
+		store:    store,
+		telegram: sender,
+		metrics:  newMetrics(),
+		logger:   discardLogger(),
+		nowFunc:  func() time.Time { return now },
 	}
 }

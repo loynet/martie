@@ -18,25 +18,25 @@ import (
 const maxContextResponseBytes = 4 << 20
 
 type ContextClient struct {
-	baseURL  string
-	consumer string
-	secret   string
-	limit    int
-	http     *http.Client
+	baseURL     string
+	integration string
+	secret      string
+	limit       int
+	http        *http.Client
 }
 
-func NewContextClient(baseURL, consumer, secret string, timeout time.Duration, limit int) *ContextClient {
+func NewContextClient(baseURL, integration, secret string, timeout time.Duration, limit int) *ContextClient {
 	return &ContextClient{
-		baseURL:  strings.TrimRight(baseURL, "/"),
-		consumer: strings.TrimSpace(consumer),
-		secret:   secret,
-		limit:    limit,
-		http:     &http.Client{Timeout: timeout},
+		baseURL:     strings.TrimRight(baseURL, "/"),
+		integration: strings.TrimSpace(integration),
+		secret:      secret,
+		limit:       limit,
+		http:        &http.Client{Timeout: timeout},
 	}
 }
 
 func (c *ContextClient) FetchThread(ctx context.Context, board string, threadID int64) (Thread, error) {
-	path := "/consumer/v1/threads/" + url.PathEscape(board) + "/" + strconv.FormatInt(threadID, 10)
+	path := "/integration/v1/threads/" + url.PathEscape(board) + "/" + strconv.FormatInt(threadID, 10)
 	if c.limit > 0 {
 		path += "?limit=" + strconv.Itoa(c.limit)
 	}
@@ -45,7 +45,7 @@ func (c *ContextClient) FetchThread(ctx context.Context, board string, threadID 
 		return Thread{}, fmt.Errorf("create gateway context request: %w", err)
 	}
 	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
-	req.Header.Set("x-ptchan-consumer", c.consumer)
+	req.Header.Set("x-ptchan-integration", c.integration)
 	req.Header.Set("x-ptchan-timestamp", timestamp)
 	req.Header.Set("x-ptchan-signature", contextSignature(c.secret, timestamp, http.MethodGet, path))
 

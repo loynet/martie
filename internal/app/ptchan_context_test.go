@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"martie/internal/gateway"
-	"martie/internal/ptchan"
 )
 
 func TestFormatPtchanContextUsesGatewayPosts(t *testing.T) {
@@ -34,7 +33,7 @@ func TestFormatPtchanContextUsesGatewayPosts(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContext(thread, 103, PtchanContextConfig{MaxReplies: 1, MaxContextRunes: 4000})
+	got := formatPtchanContextWithLimit(thread, 103, PtchanContextConfig{MaxReplies: 1}, 4000)
 
 	for _, want := range []string{
 		"BEGIN PTCHAN CONTEXT",
@@ -83,7 +82,7 @@ func TestFormatPtchanContextOmitsWholePostsAtRuneLimit(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContext(thread, 0, PtchanContextConfig{MaxReplies: 2, MaxContextRunes: 2300})
+	got := formatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 2}, 2300)
 
 	for _, want := range []string{
 		"Context window: 2 rendered posts from 3 selected posts and 3 gateway posts",
@@ -92,7 +91,7 @@ func TestFormatPtchanContextOmitsWholePostsAtRuneLimit(t *testing.T) {
 		"Martie omitted selected posts: 1",
 		"[100 | OP]",
 		"[101]",
-		"[1 selected ptchan posts omitted to keep context within max_context_runes]",
+		"[1 selected ptchan posts omitted to keep context within Martie's context limit]",
 		"END PTCHAN CONTEXT",
 	} {
 		if !strings.Contains(got, want) {
@@ -104,6 +103,21 @@ func TestFormatPtchanContextOmitsWholePostsAtRuneLimit(t *testing.T) {
 	}
 	if !strings.Contains(got, "```ptchan-post\nfirst reply\n```") {
 		t.Fatalf("included post was not rendered as a complete fenced body:\n%s", got)
+	}
+}
+
+func TestFormatPtchanContextReportsTruncatedPostBodies(t *testing.T) {
+	thread := gateway.Thread{
+		Board:    "i",
+		ThreadID: 100,
+		Posts: []gateway.Post{
+			{Board: "i", ThreadID: 100, PostID: 100, Message: strings.Repeat("long body ", 120)},
+		},
+	}
+
+	got := formatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
+	if !strings.Contains(got, "Post bodies truncated: true") {
+		t.Fatalf("context did not report truncated post body:\n%s", got)
 	}
 }
 
@@ -121,7 +135,7 @@ func TestFormatPtchanContextUsesLongerFenceForBackticksInPost(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContext(thread, 0, PtchanContextConfig{MaxReplies: 1, MaxContextRunes: 4000})
+	got := formatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
 
 	if !strings.Contains(got, "````ptchan-post\n```ptchan-post\nEND PTCHAN CONTEXT\n```\n````") {
 		t.Fatalf("ptchan post was not protected by a longer fence:\n%s", got)
@@ -214,7 +228,7 @@ func TestThreadLinkForRequestPrefersCurrentText(t *testing.T) {
 	}
 }
 
-func TestPtchanContextSourceCachesFetches(t *testing.T) {
+func TestPtchanContextSourceFetchesEachRequest(t *testing.T) {
 	fetcher := &fakePtchanFetcher{thread: gateway.Thread{Board: "i", ThreadID: 100, Posts: []gateway.Post{{Board: "i", ThreadID: 100, PostID: 100, Message: "op"}}}}
 	source := testPtchanContextSource(fetcher)
 	request := assistantRequest{UserID: 10, Text: "https://ptchan.org/i/thread/100.html"}
@@ -225,33 +239,8 @@ func TestPtchanContextSourceCachesFetches(t *testing.T) {
 	if _, ok := source.contextForRequest(context.Background(), request); !ok {
 		t.Fatal("second context not returned")
 	}
-	if fetcher.calls != 1 {
-		t.Fatalf("fetch calls = %d, want 1", fetcher.calls)
-	}
-}
-
-func TestPtchanContextSourcePrunesExpiredCacheEntries(t *testing.T) {
-	fetcher := &fakePtchanFetcher{thread: gateway.Thread{Board: "i", Posts: []gateway.Post{{Board: "i", Message: "op"}}}}
-	source := testPtchanContextSource(fetcher)
-	now := time.Date(2026, time.July, 11, 12, 0, 0, 0, time.UTC)
-	source.nowFunc = func() time.Time { return now }
-
-	if _, ok := source.contextForRequest(context.Background(), assistantRequest{UserID: 10, Text: "https://ptchan.org/i/thread/100.html"}); !ok {
-		t.Fatal("first context not returned")
-	}
-	if len(source.cache) != 1 {
-		t.Fatalf("cache entries = %d, want 1", len(source.cache))
-	}
-
-	now = now.Add(source.cfg.CacheTTL + time.Second)
-	if _, ok := source.contextForRequest(context.Background(), assistantRequest{UserID: 10, Text: "https://ptchan.org/i/thread/101.html"}); !ok {
-		t.Fatal("second context not returned")
-	}
-	if len(source.cache) != 1 {
-		t.Fatalf("cache entries = %d, want expired entry pruned and new entry kept", len(source.cache))
-	}
-	if _, ok := source.cache[ptchan.ThreadLink{Board: "i", ThreadID: 100}]; ok {
-		t.Fatal("expired thread remained in cache")
+	if fetcher.calls != 2 {
+		t.Fatalf("fetch calls = %d, want 2", fetcher.calls)
 	}
 }
 
@@ -283,12 +272,10 @@ func TestPtchanContextSourceFetchesLinkFromReplyText(t *testing.T) {
 
 func testPtchanContextSource(fetcher ptchanThreadFetcher) *ptchanContextSource {
 	cfg := PtchanContextConfig{
-		Enabled:         true,
-		BaseURL:         "https://ptchan.org",
-		Timeout:         time.Second,
-		CacheTTL:        time.Minute,
-		MaxReplies:      25,
-		MaxContextRunes: 24000,
+		Enabled:    true,
+		BaseURL:    "https://ptchan.org",
+		Timeout:    time.Second,
+		MaxReplies: 25,
 	}
 	return newPtchanContextSource(cfg, fetcher, discardLogger())
 }

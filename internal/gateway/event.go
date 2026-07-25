@@ -28,22 +28,28 @@ type Event struct {
 }
 
 type Post struct {
-	Board             string    `json:"board"`
-	ThreadID          int64     `json:"thread_id"`
-	PostID            int64     `json:"post_id"`
-	URL               string    `json:"url"`
-	Date              time.Time `json:"date"`
-	Subject           string    `json:"subject"`
-	Message           string    `json:"message"`
-	Name              string    `json:"name"`
-	Tripcode          string    `json:"tripcode"`
-	Capcode           string    `json:"capcode"`
-	Donor             *bool     `json:"donor"`
-	Country           string    `json:"country"`
-	PosterFingerprint string    `json:"poster_fingerprint"`
-	AttachmentCount   int       `json:"attachment_count"`
-	References        []PostRef `json:"references"`
-	ReferencedBy      []PostRef `json:"referenced_by"`
+	Board             string      `json:"board"`
+	ThreadID          int64       `json:"thread_id"`
+	PostID            int64       `json:"post_id"`
+	URL               string      `json:"url"`
+	Date              time.Time   `json:"date"`
+	Subject           string      `json:"subject"`
+	Message           string      `json:"message"`
+	Name              string      `json:"name"`
+	Tripcode          string      `json:"tripcode"`
+	Capcode           string      `json:"capcode"`
+	Donor             *bool       `json:"donor"`
+	Country           string      `json:"country"`
+	PosterFingerprint string      `json:"poster_fingerprint"`
+	Origin            *PostOrigin `json:"origin"`
+	AttachmentCount   int         `json:"attachment_count"`
+	References        []PostRef   `json:"references"`
+	ReferencedBy      []PostRef   `json:"referenced_by"`
+}
+
+type PostOrigin struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
 }
 
 type PostRef struct {

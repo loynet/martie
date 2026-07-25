@@ -313,20 +313,6 @@ ON CONFLICT(thread_id) DO UPDATE SET
 	return nil
 }
 
-func (s *Store) GatewayEventProcessed(ctx context.Context, eventID string) (bool, error) {
-	const query = `SELECT 1 FROM gateway_events WHERE event_id = ?;`
-
-	var found int
-	err := s.db.QueryRowContext(ctx, query, eventID).Scan(&found)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("query gateway event: %w", err)
-	}
-	return true, nil
-}
-
 func (s *Store) StoreGatewayEvent(ctx context.Context, eventID string, record ThreadRecord, notification *GatewayNotification, processedAt time.Time) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
