@@ -96,7 +96,7 @@ func TestGatewayConsumerSerializesConcurrentEvents(t *testing.T) {
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	consumer := testGatewayConsumer(store, sender, now)
-	consumer.cfg.MinReplyPosts = 1000
+	consumer.cfg.Notifications.MinReplyPosts = 1000
 
 	if err := consumer.consumeEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:thread.created:i:400",
@@ -193,7 +193,7 @@ func TestGatewayConsumerAppliesFiltersWhenOPArrivesLate(t *testing.T) {
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	consumer := testGatewayConsumer(store, sender, now)
-	consumer.cfg.Filter.KeywordDenylist = []string{"blocked"}
+	consumer.cfg.Notifications.Filter.KeywordDenylist = []string{"blocked"}
 
 	for _, id := range []int64{601, 602} {
 		if err := consumer.consumeEvent(context.Background(), gateway.Event{
@@ -242,7 +242,7 @@ func TestGatewayConsumerSuppressesFirstRunBacklogNotifications(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	consumer := testGatewayConsumer(store, sender, now)
 	consumer.bootstrapAt = now
-	consumer.cfg.MinReplyPosts = 1
+	consumer.cfg.Notifications.MinReplyPosts = 1
 
 	if err := consumer.consumeEvent(context.Background(), gateway.Event{
 		EventID:    "ptchan:post.created:i:301",
@@ -277,7 +277,7 @@ func TestGatewayConsumerBacklogDoesNotConsumeFutureNotification(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	consumer := testGatewayConsumer(store, sender, now)
 	consumer.bootstrapAt = now
-	consumer.cfg.MinReplyPosts = 1
+	consumer.cfg.Notifications.MinReplyPosts = 1
 
 	if err := consumer.consumeEvent(context.Background(), gateway.Event{
 		EventID:    "ptchan:thread.created:i:700",
@@ -337,7 +337,7 @@ func TestGatewayConsumerStoresIgnoredThreads(t *testing.T) {
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	consumer := testGatewayConsumer(store, sender, now)
-	consumer.cfg.Filter.KeywordDenylist = []string{"blocked"}
+	consumer.cfg.Notifications.Filter.KeywordDenylist = []string{"blocked"}
 
 	if err := consumer.consumeEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:thread.created:i:200",
@@ -390,13 +390,13 @@ func testGatewayStore(t *testing.T) *state.Store {
 func testGatewayConsumer(store *state.Store, sender *fakeMessageSender, now time.Time) gatewayConsumer {
 	return gatewayConsumer{
 		cfg: GatewayConfig{
-			IntegrationName: "martie",
-			Secret:          "secret",
-			Addr:            ":0",
-			Path:            "/internal/ptchan/events",
-			BaseURL:         "https://ptchan.org",
-			MinReplyPosts:   2,
+			Webhook: GatewayWebhookConfig{
+				Addr: ":0",
+				Path: "/internal/ptchan/events",
+			},
+			Notifications: GatewayNotificationConfig{MinReplyPosts: 2},
 		},
+		ptchan:   PtchanConfig{BaseURL: "https://ptchan.org", Secret: "secret"},
 		format:   telegram.NewFormatter(localization.New(localization.English)),
 		chatID:   123,
 		store:    store,

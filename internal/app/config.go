@@ -18,6 +18,7 @@ import (
 
 type Config struct {
 	Locale    localization.Locale
+	Ptchan    PtchanConfig
 	Telegram  TelegramConfig
 	Assistant AssistantConfig
 	DeepSeek  DeepSeekConfig
@@ -25,6 +26,13 @@ type Config struct {
 	Streams   StreamsConfig
 	Runtime   RuntimeConfig
 	Storage   StorageConfig
+}
+
+type PtchanConfig struct {
+	BaseURL         string
+	GatewayURL      string
+	IntegrationName string
+	Secret          string
 }
 
 type TelegramConfig struct {
@@ -73,14 +81,19 @@ type DeepSeekConfig struct {
 }
 
 type GatewayConfig struct {
-	IntegrationName string
-	Secret          string
-	Addr            string
-	Path            string
-	BaseURL         string
-	MinReplyPosts   int
-	Filter          ptchan.Filter
-	PruneAfter      time.Duration
+	Webhook       GatewayWebhookConfig
+	Notifications GatewayNotificationConfig
+}
+
+type GatewayWebhookConfig struct {
+	Addr string
+	Path string
+}
+
+type GatewayNotificationConfig struct {
+	MinReplyPosts int
+	Filter        ptchan.Filter
+	PruneAfter    time.Duration
 }
 
 type StreamsConfig struct {
@@ -90,9 +103,9 @@ type StreamsConfig struct {
 }
 
 type RuntimeConfig struct {
-	Components  []ComponentName
-	MetricsAddr string
-	Logging     LoggingConfig
+	Components []ComponentName
+	HTTPAddr   string
+	Logging    LoggingConfig
 }
 
 type ComponentName string
@@ -122,12 +135,20 @@ type StorageConfig struct {
 type fileConfig struct {
 	Locale    string              `toml:"locale"`
 	Name      string              `toml:"name"`
+	Ptchan    filePtchanConfig    `toml:"ptchan"`
 	Telegram  fileTelegramConfig  `toml:"telegram"`
 	Assistant fileAssistantConfig `toml:"assistant"`
 	DeepSeek  fileDeepSeekConfig  `toml:"deepseek"`
 	Gateway   fileGatewayConfig   `toml:"gateway"`
 	Streams   fileStreamsConfig   `toml:"streams"`
 	Runtime   fileRuntimeConfig   `toml:"runtime"`
+	Storage   fileStorageConfig   `toml:"storage"`
+}
+
+type filePtchanConfig struct {
+	BaseURL         string `toml:"base_url"`
+	GatewayURL      string `toml:"gateway_url"`
+	IntegrationName string `toml:"integration_name"`
 }
 
 type fileTelegramConfig struct {
@@ -143,21 +164,18 @@ type fileAssistantConfig struct {
 	SystemPrompt  string              `toml:"system_prompt"`
 	RateLimit     fileRateLimitConfig `toml:"rate_limit"`
 	Memory        fileMemoryConfig    `toml:"memory"`
-	PtchanContext filePtchanContext   `toml:"ptchan_context"`
-	Trace         fileAssistantTrace  `toml:"trace"`
+	PtchanContext *filePtchanContext  `toml:"ptchan_context"`
+	Trace         *fileAssistantTrace `toml:"trace"`
 }
 
 type fileAssistantTrace struct {
-	Enabled  bool `toml:"enabled"`
-	MaxFiles int  `toml:"max_files"`
+	Dir      *string `toml:"dir"`
+	MaxFiles *int    `toml:"max_files"`
 }
 
 type filePtchanContext struct {
-	Enabled    bool   `toml:"enabled"`
-	BaseURL    string `toml:"base_url"`
-	GatewayURL string `toml:"gateway_url"`
-	Timeout    string `toml:"timeout"`
-	MaxReplies int    `toml:"max_replies"`
+	Timeout    *string `toml:"timeout"`
+	MaxReplies *int    `toml:"max_replies"`
 }
 
 type fileMemoryConfig struct {
@@ -180,10 +198,16 @@ type fileDeepSeekConfig struct {
 }
 
 type fileGatewayConfig struct {
-	IntegrationName string   `toml:"integration_name"`
-	Addr            string   `toml:"addr"`
-	Path            string   `toml:"path"`
-	BaseURL         string   `toml:"base_url"`
+	Webhook       fileGatewayWebhookConfig      `toml:"webhook"`
+	Notifications fileGatewayNotificationConfig `toml:"notifications"`
+}
+
+type fileGatewayWebhookConfig struct {
+	Addr string `toml:"addr"`
+	Path string `toml:"path"`
+}
+
+type fileGatewayNotificationConfig struct {
 	MinReplyPosts   int      `toml:"min_reply_posts"`
 	BoardDenylist   []string `toml:"board_denylist"`
 	KeywordDenylist []string `toml:"keyword_denylist"`
@@ -192,9 +216,13 @@ type fileGatewayConfig struct {
 }
 
 type fileRuntimeConfig struct {
-	Components  []string          `toml:"components"`
-	MetricsAddr string            `toml:"metrics_addr"`
-	Logging     fileLoggingConfig `toml:"logging"`
+	Components []string          `toml:"components"`
+	HTTPAddr   string            `toml:"http_addr"`
+	Logging    fileLoggingConfig `toml:"logging"`
+}
+
+type fileStorageConfig struct {
+	SQLitePath string `toml:"sqlite_path"`
 }
 
 type fileLoggingConfig struct {
@@ -217,6 +245,11 @@ type fileStreamConfig struct {
 func defaultFileConfig() fileConfig {
 	return fileConfig{
 		Locale: string(localization.English),
+		Ptchan: filePtchanConfig{
+			BaseURL:         "https://ptchan.org",
+			GatewayURL:      "http://ptchan-gateway:8080",
+			IntegrationName: "martie",
+		},
 		Assistant: fileAssistantConfig{
 			MaxInputRunes: 4096,
 			Memory: fileMemoryConfig{
@@ -230,13 +263,6 @@ func defaultFileConfig() fileConfig {
 				GlobalLimit: 100,
 				GlobalBurst: 12,
 			},
-			PtchanContext: filePtchanContext{
-				BaseURL:    "https://ptchan.org",
-				GatewayURL: "http://ptchan-gateway:8080",
-				Timeout:    "5s",
-				MaxReplies: defaultPtchanMaxReplies,
-			},
-			Trace: fileAssistantTrace{MaxFiles: 100},
 		},
 		DeepSeek: fileDeepSeekConfig{
 			Model:     "deepseek-v4-flash",
@@ -244,13 +270,15 @@ func defaultFileConfig() fileConfig {
 			Timeout:   "60s",
 		},
 		Gateway: fileGatewayConfig{
-			IntegrationName: "martie",
-			Addr:            ":8081",
-			Path:            "/internal/ptchan/events",
-			BaseURL:         "https://ptchan.org",
-			MinReplyPosts:   10,
-			MaxThreadAge:    "0s",
-			PruneAfter:      "720h",
+			Webhook: fileGatewayWebhookConfig{
+				Addr: ":8081",
+				Path: "/internal/ptchan/events",
+			},
+			Notifications: fileGatewayNotificationConfig{
+				MinReplyPosts: 10,
+				MaxThreadAge:  "0s",
+				PruneAfter:    "720h",
+			},
 		},
 		Runtime: fileRuntimeConfig{
 			Logging: fileLoggingConfig{
@@ -258,6 +286,7 @@ func defaultFileConfig() fileConfig {
 				Format: string(LogText),
 			},
 		},
+		Storage: fileStorageConfig{SQLitePath: "data/bot.db"},
 		Streams: fileStreamsConfig{EndMissThreshold: 2, PollInterval: "60s"},
 	}
 }
@@ -289,8 +318,16 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	ptchanContext := assistantPtchanContextConfig(raw.Assistant.PtchanContext)
+	trace := assistantTraceConfig(raw.Assistant.Trace)
 	cfg := Config{
 		Locale: locale,
+		Ptchan: PtchanConfig{
+			BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
+			GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
+			IntegrationName: strings.TrimSpace(raw.Ptchan.IntegrationName),
+			Secret:          strings.TrimSpace(os.Getenv(integrationSecretEnv(raw.Ptchan.IntegrationName))),
+		},
 		Telegram: TelegramConfig{
 			BotToken:           strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 			NotificationChatID: raw.Telegram.NotificationChatID,
@@ -307,16 +344,16 @@ func LoadConfig() (Config, error) {
 			MaxInputRunes:      raw.Assistant.MaxInputRunes,
 			LogMemory:          raw.Assistant.LogMemory,
 			Trace: AssistantTraceConfig{
-				Enabled:  raw.Assistant.Trace.Enabled,
-				Dir:      filepath.Clean(envOr("MARTIE_ASSISTANT_TRACE_DIR", "data/traces")),
-				MaxFiles: raw.Assistant.Trace.MaxFiles,
+				Enabled:  raw.Assistant.Trace != nil,
+				Dir:      filepath.Clean(strings.TrimSpace(trace.Dir)),
+				MaxFiles: trace.MaxFiles,
 			},
 			HistoryExchanges: raw.Assistant.Memory.HistoryExchanges,
 			PtchanContext: PtchanContextConfig{
-				Enabled:    raw.Assistant.PtchanContext.Enabled,
-				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.BaseURL), "/"),
-				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Assistant.PtchanContext.GatewayURL), "/"),
-				MaxReplies: raw.Assistant.PtchanContext.MaxReplies,
+				Enabled:    raw.Assistant.PtchanContext != nil,
+				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
+				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
+				MaxReplies: ptchanContext.MaxReplies,
 			},
 		},
 		DeepSeek: DeepSeekConfig{
@@ -325,23 +362,33 @@ func LoadConfig() (Config, error) {
 			MaxTokens: raw.DeepSeek.MaxTokens,
 		},
 		Gateway: GatewayConfig{
-			IntegrationName: strings.TrimSpace(raw.Gateway.IntegrationName),
-			Secret:          strings.TrimSpace(os.Getenv(integrationSecretEnv(raw.Gateway.IntegrationName))),
-			Addr:            strings.TrimSpace(raw.Gateway.Addr),
-			Path:            cleanGatewayPath(raw.Gateway.Path),
-			BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Gateway.BaseURL), "/"),
-			MinReplyPosts:   raw.Gateway.MinReplyPosts,
-			Filter: ptchan.Filter{
-				BoardDenylist:   raw.Gateway.BoardDenylist,
-				KeywordDenylist: raw.Gateway.KeywordDenylist,
+			Webhook: GatewayWebhookConfig{
+				Addr: strings.TrimSpace(raw.Gateway.Webhook.Addr),
+				Path: cleanGatewayPath(raw.Gateway.Webhook.Path),
+			},
+			Notifications: GatewayNotificationConfig{
+				MinReplyPosts: raw.Gateway.Notifications.MinReplyPosts,
+				Filter: ptchan.Filter{
+					BoardDenylist:   raw.Gateway.Notifications.BoardDenylist,
+					KeywordDenylist: raw.Gateway.Notifications.KeywordDenylist,
+				},
 			},
 		},
 		Streams: StreamsConfig{EndMissThreshold: raw.Streams.EndMissThreshold},
-		Runtime: RuntimeConfig{MetricsAddr: strings.TrimSpace(raw.Runtime.MetricsAddr)},
-		Storage: StorageConfig{SQLitePath: filepath.Clean(envOr("SQLITE_PATH", "data/bot.db"))},
+		Runtime: RuntimeConfig{HTTPAddr: strings.TrimSpace(raw.Runtime.HTTPAddr)},
+		Storage: StorageConfig{SQLitePath: filepath.Clean(strings.TrimSpace(raw.Storage.SQLitePath))},
 	}
 
 	cfg.Assistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Assistant.SystemPrompt), "{{name}}", cfg.Assistant.Name)
+	if cfg.Ptchan.BaseURL == "" {
+		return Config{}, fmt.Errorf("ptchan.base_url is required")
+	}
+	if cfg.Ptchan.GatewayURL == "" {
+		return Config{}, fmt.Errorf("ptchan.gateway_url is required")
+	}
+	if cfg.Ptchan.IntegrationName == "" {
+		return Config{}, fmt.Errorf("ptchan.integration_name is required")
+	}
 	if cfg.Assistant.MaxInputRunes <= 0 {
 		return Config{}, fmt.Errorf("assistant.max_input_runes must be positive")
 	}
@@ -357,14 +404,11 @@ func LoadConfig() (Config, error) {
 	if cfg.Assistant.PtchanContext.MaxReplies <= 0 {
 		return Config{}, fmt.Errorf("assistant.ptchan_context.max_replies must be positive")
 	}
-	if cfg.Assistant.PtchanContext.Enabled && cfg.Assistant.PtchanContext.BaseURL == "" {
-		return Config{}, fmt.Errorf("assistant.ptchan_context.base_url is required when enabled")
-	}
-	if cfg.Assistant.PtchanContext.Enabled && cfg.Assistant.PtchanContext.GatewayURL == "" {
-		return Config{}, fmt.Errorf("assistant.ptchan_context.gateway_url is required when enabled")
-	}
 	if cfg.Assistant.Trace.MaxFiles <= 0 {
 		return Config{}, fmt.Errorf("assistant.trace.max_files must be positive")
+	}
+	if cfg.Assistant.Trace.Enabled && cfg.Assistant.Trace.Dir == "." {
+		return Config{}, fmt.Errorf("assistant.trace.dir is required when enabled")
 	}
 	if cfg.DeepSeek.Model == "" {
 		return Config{}, fmt.Errorf("deepseek.model is required")
@@ -372,20 +416,14 @@ func LoadConfig() (Config, error) {
 	if cfg.DeepSeek.MaxTokens <= 0 {
 		return Config{}, fmt.Errorf("deepseek.max_tokens must be positive")
 	}
-	if cfg.Gateway.IntegrationName == "" {
-		return Config{}, fmt.Errorf("gateway.integration_name is required")
+	if cfg.Gateway.Webhook.Addr == "" {
+		return Config{}, fmt.Errorf("gateway.webhook.addr is required")
 	}
-	if cfg.Gateway.Addr == "" {
-		return Config{}, fmt.Errorf("gateway.addr is required")
+	if cfg.Gateway.Webhook.Path == "" {
+		return Config{}, fmt.Errorf("gateway.webhook.path is required")
 	}
-	if cfg.Gateway.Path == "" {
-		return Config{}, fmt.Errorf("gateway.path is required")
-	}
-	if cfg.Gateway.BaseURL == "" {
-		return Config{}, fmt.Errorf("gateway.base_url is required")
-	}
-	if cfg.Gateway.MinReplyPosts < 0 {
-		return Config{}, fmt.Errorf("gateway.min_reply_posts must be non-negative")
+	if cfg.Gateway.Notifications.MinReplyPosts < 0 {
+		return Config{}, fmt.Errorf("gateway.notifications.min_reply_posts must be non-negative")
 	}
 	if cfg.Streams.EndMissThreshold <= 0 {
 		return Config{}, fmt.Errorf("streams.end_miss_threshold must be positive")
@@ -432,7 +470,7 @@ func LoadConfig() (Config, error) {
 	if cfg.Assistant.RateLimitWindow, err = positiveDuration("assistant.rate_limit.window", raw.Assistant.RateLimit.Window); err != nil {
 		return Config{}, err
 	}
-	if cfg.Assistant.PtchanContext.Timeout, err = positiveDuration("assistant.ptchan_context.timeout", raw.Assistant.PtchanContext.Timeout); err != nil {
+	if cfg.Assistant.PtchanContext.Timeout, err = positiveDuration("assistant.ptchan_context.timeout", ptchanContext.Timeout); err != nil {
 		return Config{}, err
 	}
 	if cfg.DeepSeek.Timeout, err = positiveDuration("deepseek.timeout", raw.DeepSeek.Timeout); err != nil {
@@ -441,14 +479,58 @@ func LoadConfig() (Config, error) {
 	if cfg.Streams.PollInterval, err = positiveDuration("streams.poll_interval", raw.Streams.PollInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.Gateway.Filter.MaxThreadAge, err = nonNegativeDuration("gateway.max_thread_age", raw.Gateway.MaxThreadAge); err != nil {
+	if cfg.Gateway.Notifications.Filter.MaxThreadAge, err = nonNegativeDuration("gateway.notifications.max_thread_age", raw.Gateway.Notifications.MaxThreadAge); err != nil {
 		return Config{}, err
 	}
-	if cfg.Gateway.PruneAfter, err = nonNegativeDuration("gateway.prune_after", raw.Gateway.PruneAfter); err != nil {
+	if cfg.Gateway.Notifications.PruneAfter, err = nonNegativeDuration("gateway.notifications.prune_after", raw.Gateway.Notifications.PruneAfter); err != nil {
 		return Config{}, err
+	}
+	if cfg.Storage.SQLitePath == "." {
+		return Config{}, fmt.Errorf("storage.sqlite_path is required")
 	}
 
 	return cfg, nil
+}
+
+func assistantPtchanContextConfig(raw *filePtchanContext) ptchanContextFileConfig {
+	cfg := ptchanContextFileConfig{
+		Timeout:    "5s",
+		MaxReplies: defaultPtchanMaxReplies,
+	}
+	if raw == nil {
+		return cfg
+	}
+	if raw.Timeout != nil {
+		cfg.Timeout = *raw.Timeout
+	}
+	if raw.MaxReplies != nil {
+		cfg.MaxReplies = *raw.MaxReplies
+	}
+	return cfg
+}
+
+type ptchanContextFileConfig struct {
+	Timeout    string
+	MaxReplies int
+}
+
+func assistantTraceConfig(raw *fileAssistantTrace) assistantTraceFileConfig {
+	cfg := assistantTraceFileConfig{Dir: "data/traces", MaxFiles: 100}
+	if raw == nil {
+		return cfg
+	}
+	if raw.Dir != nil {
+		cfg.Dir = *raw.Dir
+	}
+	if raw.MaxFiles != nil {
+		cfg.MaxFiles = *raw.MaxFiles
+	}
+	return cfg
+}
+
+type assistantTraceFileConfig struct {
+	Dir      string
+	MaxFiles int
 }
 
 func (c Config) runs(component ComponentName) bool {
@@ -473,8 +555,8 @@ func (c Config) ValidateRun() error {
 	if c.runs(componentStreams) && len(c.Streams.Channels) == 0 {
 		return fmt.Errorf("streams requires at least one channel")
 	}
-	if c.runs(componentGateway) && c.Gateway.Secret == "" {
-		return fmt.Errorf("%s is required for gateway", integrationSecretEnv(c.Gateway.IntegrationName))
+	if c.runs(componentGateway) && c.Ptchan.Secret == "" {
+		return fmt.Errorf("%s is required for gateway", integrationSecretEnv(c.Ptchan.IntegrationName))
 	}
 	if !c.runs(componentAssistant) {
 		return nil
@@ -494,17 +576,10 @@ func (c Config) ValidateRun() error {
 	if c.DeepSeek.APIKey == "" {
 		return fmt.Errorf("DEEPSEEK_API_KEY is required for assistant")
 	}
-	if c.Assistant.PtchanContext.Enabled && c.Gateway.Secret == "" {
-		return fmt.Errorf("%s is required for assistant ptchan context", integrationSecretEnv(c.Gateway.IntegrationName))
+	if c.Assistant.PtchanContext.Enabled && c.Ptchan.Secret == "" {
+		return fmt.Errorf("%s is required for assistant ptchan context", integrationSecretEnv(c.Ptchan.IntegrationName))
 	}
 	return nil
-}
-
-func envOr(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func integrationSecretEnv(name string) string {

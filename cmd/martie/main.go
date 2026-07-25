@@ -20,6 +20,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if command == "check-health" {
+		if err := app.CheckHealth(os.Getenv("HEALTHCHECK_ADDR")); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	cfg, err := app.LoadConfig()
 	if err != nil {
@@ -27,11 +33,14 @@ func main() {
 	}
 	logger := newLogger(cfg.Runtime.Logging)
 
-	if command == "run" {
+	if command == "run" || command == "check-config" {
 		if err := cfg.ValidateRun(); err != nil {
 			logger.Error("load config", "error", err)
 			os.Exit(1)
 		}
+	}
+	if command == "check-config" {
+		return
 	}
 
 	store, err := state.Open(cfg.Storage.SQLitePath)
@@ -69,12 +78,12 @@ func parseCommand(args []string) (string, error) {
 	}
 
 	switch args[0] {
-	case "run":
+	case "run", "check-config", "check-health":
 		if len(args) > 1 {
-			return "", fmt.Errorf("usage: martie [run]")
+			return "", fmt.Errorf("usage: martie [run|check-config|check-health]")
 		}
 		return args[0], nil
 	default:
-		return "", fmt.Errorf("usage: martie [run]")
+		return "", fmt.Errorf("usage: martie [run|check-config|check-health]")
 	}
 }

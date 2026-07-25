@@ -1,5 +1,6 @@
 BINARY ?= martie
-IMAGE ?= martie:local
+IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf local)
+IMAGE ?= martie:$(IMAGE_TAG)
 BOT_ENV ?= dev
 ENV_FILE ?= .env.$(BOT_ENV)
 CONFIG_FILE ?= config/$(BOT_ENV).toml
@@ -12,15 +13,21 @@ GO_BUILD_FLAGS ?= -trimpath -buildvcs=false
 LOAD_ENV = set -a; . ./$(ENV_FILE); set +a; \
 	BOT_ENV=$(BOT_ENV); \
 	CONFIG_FILE=$(CONFIG_FILE); \
-	SQLITE_PATH=$${SQLITE_PATH:-data/$(BOT_ENV).db}; \
-	export BOT_ENV CONFIG_FILE SQLITE_PATH
+	export BOT_ENV CONFIG_FILE
 DOCKER_RUN_FLAGS = --env-file $(ENV_FILE) \
 	-e CONFIG_FILE=/etc/martie/config.toml \
-	-e SQLITE_PATH=/data/bot.db \
-	-e MARTIE_ASSISTANT_TRACE_DIR=/data/traces \
+	-e HEALTHCHECK_ADDR=127.0.0.1:9090 \
 	--mount type=bind,source=$(abspath $(CONFIG_FILE)),target=/etc/martie/config.toml,readonly \
 	--mount type=volume,source=$(VOLUME),target=/data \
 	--read-only \
+	--tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+	--cap-drop ALL \
+	--security-opt no-new-privileges
+DOCKER_CHECK_CONFIG_FLAGS = --env-file $(ENV_FILE) \
+	-e CONFIG_FILE=/etc/martie/config.toml \
+	--mount type=bind,source=$(abspath $(CONFIG_FILE)),target=/etc/martie/config.toml,readonly \
+	--read-only \
+	--tmpfs /data:rw,noexec,nosuid,nodev,size=16m \
 	--tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
 	--cap-drop ALL \
 	--security-opt no-new-privileges
@@ -37,14 +44,15 @@ ifneq ($(strip $(DOCKER_NETWORK)),)
 DOCKER_NETWORK_FLAGS = --network $(DOCKER_NETWORK)
 endif
 
-.PHONY: help fmt lint test tidy build run docker-build docker-run docker-deploy docker-logs docker-traces docker-clean check clean
+.PHONY: help fmt lint test tidy build run check-config docker-build docker-check-config docker-run docker-deploy docker-logs docker-traces docker-clean check clean
 
 help:
 	@printf '%s\n' \
 		'Targets: fmt lint test tidy build run check clean' \
-		'Docker:  docker-build docker-run docker-deploy docker-logs docker-traces docker-clean' \
+		'Check:   check-config validates config and selected component dependencies' \
+		'Docker:  docker-build docker-check-config docker-run docker-deploy docker-logs docker-traces docker-clean' \
 		'Config:  BOT_ENV=dev reads config/dev.toml and .env.dev' \
-		'Image:   IMAGE=martie:local' \
+		'Image:   IMAGE defaults to martie:$(IMAGE_TAG)' \
 		'Logs:    DOCKER_LOG_DRIVER=local or journald' \
 		'Network: DOCKER_NETWORK=monitoring joins an existing Docker network'
 
@@ -66,8 +74,18 @@ build:
 run:
 	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie
 
+check-config:
+	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie check-config
+
 docker-build:
 	docker build --pull -t $(IMAGE) .
+
+docker-check-config:
+	docker run --rm \
+		$(DOCKER_CHECK_CONFIG_FLAGS) \
+		$(DOCKER_NETWORK_FLAGS) \
+		$(DOCKER_RUN_EXTRA) \
+		$(IMAGE) check-config
 
 docker-run:
 	docker run -d \
@@ -79,7 +97,7 @@ docker-run:
 		$(DOCKER_RUN_EXTRA) \
 		$(IMAGE)
 
-docker-deploy: docker-build
+docker-deploy: docker-build docker-check-config
 	-docker rm -f $(CONTAINER)
 	docker run -d \
 		--name $(CONTAINER) \

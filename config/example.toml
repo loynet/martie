@@ -3,6 +3,15 @@ locale = "en"
 # Name used in the system prompt and when attributing replies to the bot.
 name = "Martie"
 
+[ptchan]
+# Public ptchan origin used when parsing and formatting thread links.
+base_url = "https://ptchan.org"
+# ptchan-gateway base URL used for signed assistant context requests.
+gateway_url = "http://ptchan-gateway:8080"
+# Integration name configured in ptchan-gateway. The matching secret is read from
+# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses PTCHAN_INTEGRATION_MARTIE_SECRET.
+integration_name = "martie"
+
 [telegram]
 # Channel or chat that receives gateway and stream notifications.
 notification_chat_id = 123456789
@@ -42,19 +51,18 @@ user_burst = 6
 global_limit = 100
 global_burst = 12
 
+# Delete this section to answer without fetching ptchan-gateway context.
 [assistant.ptchan_context]
-# When enabled, messages containing ptchan thread links fetch sanitized
-# ptchan-gateway context and render a bounded prompt packet for the assistant.
-enabled = false
-base_url = "https://ptchan.org"
-gateway_url = "http://ptchan-gateway:8080"
+# Messages containing ptchan thread links fetch sanitized ptchan-gateway context
+# and render a bounded prompt packet for the assistant.
 timeout = "5s"
 # Render the OP when available plus this many focused or recent non-OP posts.
 max_replies = 25
 
+# Delete this section unless you are actively debugging assistant prompts.
 [assistant.trace]
 # Write one human-readable trace for each assistant interaction sent to the model.
-enabled = false
+dir = "data/traces"
 # Oldest traces are removed after this many files.
 max_files = 100
 
@@ -66,15 +74,12 @@ max_tokens = 500
 # Deadline for one DeepSeek completion request.
 timeout = "60s"
 
-[gateway]
-# Integration name configured in ptchan-gateway. The matching secret is read from
-# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses PTCHAN_INTEGRATION_MARTIE_SECRET.
-integration_name = "martie"
+[gateway.webhook]
 # Address and path where Martie accepts signed gateway webhooks.
 addr = ":8081"
 path = "/internal/ptchan/events"
-# Public ptchan origin used when formatting Telegram thread links.
-base_url = "https://ptchan.org"
+
+[gateway.notifications]
 # Notify after this many observed reply posts.
 min_reply_posts = 10
 # Boards and case-insensitive OP text fragments excluded from tracking.
@@ -88,14 +93,18 @@ prune_after = "24h"
 [runtime]
 # Components run by this process: "gateway", "streams", and/or "assistant".
 components = ["gateway", "streams", "assistant"]
-# Empty disables the Prometheus endpoint.
-metrics_addr = ""
+# Process health/readiness and Prometheus address. Empty disables the endpoint.
+http_addr = ":9090"
 
 [runtime.logging]
 # Minimum log level: "debug", "info", "warn", or "error".
 level = "info"
 # Output encoding: human-readable "text" or structured "json".
 format = "text"
+
+[storage]
+# SQLite location.
+sqlite_path = "data/bot.db"
 
 [streams]
 # How often to probe configured streams.
@@ -105,12 +114,12 @@ end_miss_threshold = 2
 
 [[streams.channel]]
 # Stable storage key, URL used to detect liveness, and public link sent to Telegram.
-key = "oficial"
-probe_url = "https://stream-global.bfcdn.host/app/031304855496+miau/llhls.m3u8"
-page_url = "https://miau.gg/oficial"
+key = "main"
+probe_url = "https://stream.example.com/main/llhls.m3u8"
+page_url = "https://example.com/main"
 
 [[streams.channel]]
 # Repeat the same three fields for each additional stream.
-key = "l29utp0"
-probe_url = "https://stream-global.bfcdn.host/app/031304855496+l29utp0/llhls.m3u8"
-page_url = "https://miau.gg/l29utp0"
+key = "backup"
+probe_url = "https://stream.example.com/backup/llhls.m3u8"
+page_url = "https://example.com/backup"

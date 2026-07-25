@@ -22,6 +22,7 @@ const maxGatewayEventBytes = 1 << 20
 
 type gatewayConsumer struct {
 	cfg         GatewayConfig
+	ptchan      PtchanConfig
 	format      telegram.Formatter
 	chatID      int64
 	store       *state.Store
@@ -41,9 +42,9 @@ func (g *gatewayConsumer) run(ctx context.Context) error {
 	g.bootstrapAt = bootstrapAt
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(g.cfg.Path, g.handleEvent)
+	mux.HandleFunc(g.cfg.Webhook.Path, g.handleEvent)
 
-	listener, err := net.Listen("tcp", g.cfg.Addr)
+	listener, err := net.Listen("tcp", g.cfg.Webhook.Addr)
 	if err != nil {
 		return fmt.Errorf("listen for gateway events: %w", err)
 	}
@@ -69,7 +70,7 @@ func (g *gatewayConsumer) run(ctx context.Context) error {
 		g.deliverNotifications(workerCtx)
 	}()
 
-	g.logger.Info("gateway consumer listening", "address", listener.Addr().String(), "path", g.cfg.Path)
+	g.logger.Info("gateway consumer listening", "address", listener.Addr().String(), "path", g.cfg.Webhook.Path)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -106,7 +107,7 @@ func (g *gatewayConsumer) handleEvent(w http.ResponseWriter, r *http.Request) {
 	timestamp := r.Header.Get("x-ptchan-timestamp")
 	eventID := r.Header.Get("x-ptchan-event-id")
 	signature := r.Header.Get("x-ptchan-signature")
-	if err := gateway.VerifyWebhook(g.cfg.Secret, timestamp, signature, body, g.nowFunc()); err != nil {
+	if err := gateway.VerifyWebhook(g.ptchan.Secret, timestamp, signature, body, g.nowFunc()); err != nil {
 		g.logger.Warn("gateway webhook rejected", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -185,7 +186,7 @@ func (g *gatewayConsumer) threadRecordForEvent(record state.ThreadRecord, found 
 	record.LastSeenAt = now
 	switch event.Kind {
 	case gateway.KindThreadCreated:
-		record.Ignored = !g.cfg.Filter.Allows(gatewayFilterThread(event), now)
+		record.Ignored = !g.cfg.Notifications.Filter.Allows(gatewayFilterThread(event), now)
 		record.HasOP = true
 		if event.Post.AttachmentCount > record.ReplyFiles {
 			record.ReplyFiles = event.Post.AttachmentCount
@@ -199,17 +200,17 @@ func (g *gatewayConsumer) threadRecordForEvent(record state.ThreadRecord, found 
 }
 
 func (g *gatewayConsumer) notificationForEvent(record state.ThreadRecord, event gateway.Event, now time.Time) *state.GatewayNotification {
-	if !record.HasOP || record.Ignored || record.NotifiedNewAt != nil || record.ReplyPosts < g.cfg.MinReplyPosts || !g.shouldNotify(event) {
+	if !record.HasOP || record.Ignored || record.NotifiedNewAt != nil || record.ReplyPosts < g.cfg.Notifications.MinReplyPosts || !g.shouldNotify(event) {
 		return nil
 	}
 
-	message := g.format.ThreadNotification(g.cfg.BaseURL, telegram.ThreadNotice{
+	message := g.format.ThreadNotification(g.ptchan.BaseURL, telegram.ThreadNotice{
 		Board:      record.Board,
 		PostID:     record.PostID,
 		Date:       record.CreatedAt,
 		ReplyPosts: record.ReplyPosts,
 		ReplyFiles: record.ReplyFiles,
-	}, g.cfg.MinReplyPosts, now)
+	}, g.cfg.Notifications.MinReplyPosts, now)
 	return &state.GatewayNotification{
 		ThreadID:  record.ThreadID,
 		ChatID:    g.chatID,
@@ -281,10 +282,10 @@ func gatewayNotificationBackoff(attempts int) time.Duration {
 }
 
 func (g *gatewayConsumer) prune(ctx context.Context) {
-	if g.cfg.PruneAfter == 0 {
+	if g.cfg.Notifications.PruneAfter == 0 {
 		return
 	}
-	cutoff := g.nowFunc().UTC().Add(-g.cfg.PruneAfter)
+	cutoff := g.nowFunc().UTC().Add(-g.cfg.Notifications.PruneAfter)
 	count, err := g.store.PruneGatewayBefore(ctx, cutoff)
 	if err != nil {
 		g.logger.Warn("gateway prune failed", "error", err)

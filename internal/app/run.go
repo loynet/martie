@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +35,7 @@ func Run(
 	logger *slog.Logger,
 ) error {
 	metrics := newMetrics()
-	server, serverErrors, err := startMetricsServer(cfg.Runtime.MetricsAddr, metrics, logger.With("component", "metrics"))
+	server, serverErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, logger.With("component", "http"))
 	if err != nil {
 		return err
 	}
@@ -61,6 +63,7 @@ func Run(
 	if cfg.runs(componentGateway) {
 		gateway := gatewayConsumer{
 			cfg:      cfg.Gateway,
+			ptchan:   cfg.Ptchan,
 			format:   formatter,
 			chatID:   cfg.Telegram.NotificationChatID,
 			store:    store,
@@ -79,8 +82,8 @@ func Run(
 		if cfg.Assistant.PtchanContext.Enabled {
 			contextClient = gateway.NewContextClient(
 				cfg.Assistant.PtchanContext.GatewayURL,
-				cfg.Gateway.IntegrationName,
-				cfg.Gateway.Secret,
+				cfg.Ptchan.IntegrationName,
+				cfg.Ptchan.Secret,
 				cfg.Assistant.PtchanContext.Timeout,
 				ptchanGatewayContextLimit,
 			)
@@ -104,7 +107,7 @@ func Run(
 	case err := <-serverErrors:
 		stop()
 		workers.Wait()
-		return fmt.Errorf("metrics server: %w", err)
+		return fmt.Errorf("http server: %w", err)
 	}
 	stop()
 	workers.Wait()
@@ -154,21 +157,18 @@ func supervise(ctx context.Context, component component, logger *slog.Logger) {
 	}
 }
 
-func startMetricsServer(addr string, metrics *metrics, logger *slog.Logger) (*http.Server, <-chan error, error) {
+func startHTTPServer(addr string, metrics *metrics, logger *slog.Logger) (*http.Server, <-chan error, error) {
 	if addr == "" {
 		return nil, nil, nil
 	}
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listen for metrics: %w", err)
+		return nil, nil, fmt.Errorf("listen for http: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.handler())
-
 	server := &http.Server{
-		Handler:           mux,
+		Handler:           httpHandler(metrics),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -179,8 +179,41 @@ func startMetricsServer(addr string, metrics *metrics, logger *slog.Logger) (*ht
 		}
 	}()
 
-	logger.Info("metrics listening", "address", listener.Addr().String())
+	logger.Info("http listening", "address", listener.Addr().String())
 	return server, errors, nil
+}
+
+func httpHandler(metrics *metrics) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthHandler)
+	mux.HandleFunc("/readyz", healthHandler)
+	mux.Handle("/metrics", metrics.handler())
+	return mux
+}
+
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "ok\n")
+}
+
+func CheckHealth(addr string) error {
+	if addr == "" {
+		addr = "127.0.0.1:9090"
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+
+	client := http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return fmt.Errorf("send health check: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check status %s", resp.Status)
+	}
+	return nil
 }
 
 func shutdownMetricsServer(server *http.Server, logger *slog.Logger) {
