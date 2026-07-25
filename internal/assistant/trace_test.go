@@ -1,4 +1,4 @@
-package app
+package assistant
 
 import (
 	"os"
@@ -11,7 +11,7 @@ import (
 )
 
 func TestFormatAssistantTraceSeparatesStoredAndModelContext(t *testing.T) {
-	trace := &assistantTrace{
+	trace := &Trace{
 		StartedAt:    time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC),
 		MessageID:    42,
 		ThreadID:     7,
@@ -30,7 +30,7 @@ func TestFormatAssistantTraceSeparatesStoredAndModelContext(t *testing.T) {
 		StoredAfter: []deepseek.Message{{Role: deepseek.RoleUser, Content: "explain"}, {Role: deepseek.RoleAssistant, Content: "answer"}},
 	}
 
-	got := formatAssistantTrace(trace)
+	got := FormatTrace(trace)
 	for _, want := range []string{
 		"CONTEXT DECISIONS\nhistory: yes\nreply: yes\nptchan: yes",
 		"STORED BEFORE\n\n[MESSAGE 1 | user | 11 runes]\n    old request",
@@ -47,8 +47,8 @@ func TestFormatAssistantTraceSeparatesStoredAndModelContext(t *testing.T) {
 
 func TestAssistantTraceDumperWritesPrivateFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "traces")
-	dumper := newAssistantTraceDumper(AssistantTraceConfig{Enabled: true, Dir: dir, MaxFiles: 100})
-	path, err := dumper.dump(&assistantTrace{
+	dumper := NewTraceDumper(TraceConfig{Enabled: true, Dir: dir, MaxFiles: 100})
+	path, err := dumper.Dump(&Trace{
 		StartedAt: time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC),
 		MessageID: 42,
 		Outcome:   "stored",
@@ -74,14 +74,14 @@ func TestAssistantTraceDumperWritesPrivateFile(t *testing.T) {
 
 func TestAssistantTraceDumperPrunesOldestFiles(t *testing.T) {
 	dir := t.TempDir()
-	dumper := newAssistantTraceDumper(AssistantTraceConfig{Enabled: true, Dir: dir, MaxFiles: 2})
+	dumper := NewTraceDumper(TraceConfig{Enabled: true, Dir: dir, MaxFiles: 2})
 	unrelated := filepath.Join(dir, "unrelated.trace")
 	if err := os.WriteFile(unrelated, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	startedAt := time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC)
 	for i := range 3 {
-		if _, err := dumper.dump(&assistantTrace{StartedAt: startedAt.Add(time.Duration(i) * time.Second), MessageID: int64(i + 1)}); err != nil {
+		if _, err := dumper.Dump(&Trace{StartedAt: startedAt.Add(time.Duration(i) * time.Second), MessageID: int64(i + 1)}); err != nil {
 			t.Fatalf("dump trace %d: %v", i, err)
 		}
 	}
@@ -102,7 +102,7 @@ func TestAssistantTraceDumperPrunesOldestFiles(t *testing.T) {
 }
 
 func TestNewAssistantTraceDumperDisabled(t *testing.T) {
-	if got := newAssistantTraceDumper(AssistantTraceConfig{}); got != nil {
-		t.Fatalf("newAssistantTraceDumper() = %+v, want nil", got)
+	if got := NewTraceDumper(TraceConfig{}); got != nil {
+		t.Fatalf("NewTraceDumper() = %+v, want nil", got)
 	}
 }

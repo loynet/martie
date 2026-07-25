@@ -11,7 +11,7 @@ data/
 *.out
 coverage.out
 martie-assistant-*.trace
-internal/app/testdata/ptchan_context/local/
+internal/assistant/testdata/local/
 
 # macOS
 .DS_Store

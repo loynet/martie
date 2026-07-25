@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"martie/internal/assistant"
 	"martie/internal/deepseek"
 	"martie/internal/gateway"
 	"martie/internal/localization"
@@ -24,7 +25,7 @@ type component struct {
 	run  func(context.Context) error
 }
 
-const ptchanGatewayContextLimit = 50
+const ptchanGatewayThreadReadLimit = 50
 
 func Run(
 	ctx context.Context,
@@ -46,6 +47,7 @@ func Run(
 	formatter := telegram.NewFormatter(text)
 
 	var components []component
+	var gatewayEventConsumers []gatewayEventTarget
 	if cfg.runs(componentStreams) {
 		streams := streamPoller{
 			channels:         cfg.Streams.Channels,
@@ -61,7 +63,7 @@ func Run(
 		components = append(components, pollingComponent(componentStreams, cfg.Streams.PollInterval, streams.poll, metrics, logger))
 	}
 	if cfg.runs(componentGateway) {
-		gateway := gatewayConsumer{
+		notifier := &gatewayNotifier{
 			cfg:      cfg.Gateway,
 			ptchan:   cfg.Ptchan,
 			format:   formatter,
@@ -72,30 +74,53 @@ func Run(
 			logger:   logger.With("component", componentGateway),
 			nowFunc:  time.Now,
 		}
-		components = append(components, component{name: componentGateway, run: gateway.run})
+		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: componentGateway, consumer: notifier})
+		components = append(components, component{name: componentGateway, run: notifier.run})
 	}
-	if cfg.runs(componentAssistant) {
+	if cfg.runs(componentTelegramAssistant) {
 		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens, cfg.DeepSeek.Timeout)
-		assistant := newAssistant(cfg.Assistant, text, store, telegramClient, completer, metrics, logger.With("component", componentAssistant))
-		assistant.traces = newAssistantTraceDumper(cfg.Assistant.Trace)
-		var contextClient ptchanThreadFetcher
-		if cfg.Assistant.PtchanContext.Enabled {
-			client := gateway.NewContextClient(
-				cfg.Assistant.PtchanContext.GatewayURL,
+		telegramAssistant := newTelegramAssistant(cfg.TelegramAssistant, text, store, telegramClient, completer, metrics, logger.With("component", componentTelegramAssistant))
+		telegramAssistant.modelName = cfg.DeepSeek.Model
+		telegramAssistant.traces = assistant.NewTraceDumper(cfg.TelegramAssistant.Trace)
+		var threadReader assistant.PtchanThreadReader
+		if cfg.TelegramAssistant.PtchanContext.Enabled {
+			client := gateway.NewThreadReader(
+				cfg.TelegramAssistant.PtchanContext.GatewayURL,
 				cfg.Ptchan.IntegrationName,
 				cfg.Ptchan.Secret,
-				cfg.Assistant.PtchanContext.Timeout,
-				ptchanGatewayContextLimit,
+				cfg.TelegramAssistant.PtchanContext.Timeout,
+				ptchanGatewayThreadReadLimit,
 			)
-			checkCtx, cancel := context.WithTimeout(ctx, cfg.Assistant.PtchanContext.Timeout)
+			checkCtx, cancel := context.WithTimeout(ctx, cfg.TelegramAssistant.PtchanContext.Timeout)
 			if err := client.CheckReachable(checkCtx); err != nil {
-				logger.Warn("ptchan gateway context unreachable", "component", componentAssistant, "gateway_url", cfg.Assistant.PtchanContext.GatewayURL, "error", err)
+				logger.Warn("ptchan gateway thread reader unreachable", "component", componentTelegramAssistant, "gateway_url", cfg.TelegramAssistant.PtchanContext.GatewayURL, "error", err)
 			}
 			cancel()
-			contextClient = client
+			threadReader = client
 		}
-		assistant.ptchan = newPtchanContextSource(cfg.Assistant.PtchanContext, contextClient, logger.With("component", componentAssistant, "context", "ptchan"))
-		components = append(components, component{name: componentAssistant, run: assistant.run})
+		telegramAssistant.ptchan = assistant.NewPtchanContext(cfg.TelegramAssistant.PtchanContext, threadReader, logger.With("component", componentTelegramAssistant, "context", "ptchan"))
+		components = append(components, component{name: componentTelegramAssistant, run: telegramAssistant.run})
+	}
+	if cfg.runs(componentPtchanAssistant) {
+		ptchanAssistantRunner := ptchanAssistant{
+			cfg:             cfg.PtchanAssistant,
+			integrationName: cfg.Ptchan.IntegrationName,
+			logger:          logger.With("component", componentPtchanAssistant),
+			metrics:         metrics,
+		}
+		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: componentPtchanAssistant, consumer: ptchanAssistantRunner})
+		components = append(components, component{name: componentPtchanAssistant, run: ptchanAssistantRunner.run})
+	}
+	if len(gatewayEventConsumers) > 0 {
+		server := gatewayEventServer{
+			cfg:       cfg.Gateway.Webhook,
+			ptchan:    cfg.Ptchan,
+			consumers: gatewayEventConsumers,
+			logger:    logger.With("component", "gateway_events"),
+			metrics:   metrics,
+			nowFunc:   time.Now,
+		}
+		components = append(components, component{name: "gateway_events", run: server.run})
 	}
 	logger.Info("service starting", "components", cfg.Runtime.Components)
 
@@ -128,7 +153,7 @@ func pollingComponent(name ComponentName, interval time.Duration, poll func(cont
 			for {
 				startedAt := time.Now()
 				err := poll(ctx)
-				metrics.observeWorkflow(string(name), time.Since(startedAt), err)
+				metrics.observeComponentRun(string(name), time.Since(startedAt), err)
 				if err != nil && ctx.Err() == nil {
 					logger.Warn("poll failed", "component", name, "error", err)
 				}

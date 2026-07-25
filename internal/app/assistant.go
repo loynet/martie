@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"martie/internal/assistant"
 	"martie/internal/deepseek"
 	"martie/internal/localization"
 	"martie/internal/state"
@@ -35,13 +36,14 @@ type cursorStore interface {
 // completion engine. It admits requests, constructs bounded context, replaces
 // Telegram identities with temporary aliases, and delivers the final reply.
 // Conversation history is process-local and intentionally not persisted.
-type assistant struct {
-	cfg       AssistantConfig
+type telegramAssistant struct {
+	cfg       TelegramAssistantConfig
 	text      localization.Localizer
 	store     cursorStore
 	client    *telegram.Client
-	sender    assistantSender
+	sender    telegramAssistantSender
 	completer assistantCompleter
+	modelName string
 	metrics   *metrics
 	logger    *slog.Logger
 	allowed   map[int64]struct{}
@@ -50,8 +52,8 @@ type assistant struct {
 	users     map[int64]userRateLimiter
 	replies   *rate.Limiter
 	history   map[conversationKey]*conversation
-	ptchan    *ptchanContextSource
-	traces    *assistantTraceDumper
+	ptchan    *assistant.PtchanContext
+	traces    *assistant.TraceDumper
 	aliasSeed string
 }
 
@@ -79,14 +81,14 @@ type assistantCompleter interface {
 	Complete(context.Context, string, []deepseek.Message) (deepseek.Completion, error)
 }
 
-type assistantSender interface {
+type telegramAssistantSender interface {
 	Send(context.Context, telegram.SendRequest) error
 	SendTyping(context.Context, int64, int64) error
 }
 
-// assistantRequest is the admitted subset of a Telegram message. Its text and
+// telegramAssistantRequest is the admitted subset of a Telegram message. Its text and
 // identity fields remain untrusted until prompt construction and aliasing.
-type assistantRequest struct {
+type telegramAssistantRequest struct {
 	MessageID       int64
 	MessageThreadID int64
 	UserID          int64
@@ -103,13 +105,13 @@ type assistantRequest struct {
 	ReplyMentions   []string
 }
 
-func newAssistant(cfg AssistantConfig, text localization.Localizer, store *state.Store, client *telegram.Client, completer assistantCompleter, metrics *metrics, logger *slog.Logger) *assistant {
+func newTelegramAssistant(cfg TelegramAssistantConfig, text localization.Localizer, store *state.Store, client *telegram.Client, completer assistantCompleter, metrics *metrics, logger *slog.Logger) *telegramAssistant {
 	allowed := make(map[int64]struct{}, len(cfg.AllowedUserIDs))
 	for _, userID := range cfg.AllowedUserIDs {
 		allowed[userID] = struct{}{}
 	}
 
-	return &assistant{
+	return &telegramAssistant{
 		cfg:       cfg,
 		text:      text,
 		store:     store,
@@ -127,7 +129,7 @@ func newAssistant(cfg AssistantConfig, text localization.Localizer, store *state
 	}
 }
 
-func (c *assistant) run(ctx context.Context) error {
+func (c *telegramAssistant) run(ctx context.Context) error {
 	bot, err := c.client.GetMe(ctx)
 	if err != nil {
 		return fmt.Errorf("load bot identity: %w", err)
@@ -142,13 +144,13 @@ func (c *assistant) run(ctx context.Context) error {
 		return fmt.Errorf("load update cursor: %w", err)
 	}
 
-	c.logger.Info("assistant active", "username", "@"+bot.Username)
+	c.logger.Info("telegram assistant active", "username", "@"+bot.Username)
 	// Updates stay sequential so a stored cursor always means every preceding
 	// message has finished processing.
 	for {
 		startedAt := time.Now()
 		updates, err := c.client.GetUpdates(ctx, offset)
-		c.metrics.observeWorkflow(string(componentAssistant), time.Since(startedAt), err)
+		c.metrics.observeComponentRun(string(componentTelegramAssistant), time.Since(startedAt), err)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -166,18 +168,18 @@ func (c *assistant) run(ctx context.Context) error {
 	}
 }
 
-func (c *assistant) processUpdate(ctx context.Context, cursor string, update telegram.Update, bot telegram.User) error {
+func (c *telegramAssistant) processUpdate(ctx context.Context, cursor string, update telegram.Update, bot telegram.User) error {
 	request, result := c.admit(update.Message, bot)
 	if result == admissionWrongChat {
-		c.logger.Debug("assistant message ignored", "reason", result, "chat", update.Message.Chat.Title, "chat_id", update.Message.Chat.ID, "configured_chat_id", c.cfg.DiscussionChatID)
+		c.logger.Debug("telegram assistant message ignored", "reason", result, "chat", update.Message.Chat.Title, "chat_id", update.Message.Chat.ID, "configured_chat_id", c.cfg.DiscussionChatID)
 	}
 	if request != nil {
-		c.metrics.observeAssistantUpdate(admissionAccepted)
+		c.metrics.observeAssistantAdmission(componentTelegramAssistant, admissionAccepted)
 		if !c.handle(ctx, *request) {
 			return ctx.Err()
 		}
 	} else {
-		c.metrics.observeAssistantUpdate(result)
+		c.metrics.observeAssistantAdmission(componentTelegramAssistant, result)
 		c.replyToRejection(ctx, update.Message, result)
 	}
 
@@ -191,7 +193,7 @@ func telegramUpdateCursor(botID int64) string {
 	return fmt.Sprintf("telegram:%d:updates", botID)
 }
 
-func (c *assistant) admit(message *telegram.IncomingMessage, bot telegram.User) (*assistantRequest, admissionResult) {
+func (c *telegramAssistant) admit(message *telegram.IncomingMessage, bot telegram.User) (*telegramAssistantRequest, admissionResult) {
 	if message == nil {
 		return nil, admissionUnsupported
 	}
@@ -228,10 +230,10 @@ func (c *assistant) admit(message *telegram.IncomingMessage, bot telegram.User) 
 	var replyText string
 	var replyFromBot bool
 	if message.ReplyToMessage != nil {
-		replyText = truncateRunes(strings.TrimSpace(message.ReplyToMessage.Text), replyContextRunes)
+		replyText = assistant.TruncateRunes(strings.TrimSpace(message.ReplyToMessage.Text), replyContextRunes)
 		replyFromBot = message.ReplyToMessage.From != nil && message.ReplyToMessage.From.ID == bot.ID
 	}
-	request := &assistantRequest{
+	request := &telegramAssistantRequest{
 		MessageID:       message.ID,
 		MessageThreadID: message.MessageThreadID,
 		UserID:          message.From.ID,
@@ -262,11 +264,11 @@ func (c *assistant) admit(message *telegram.IncomingMessage, bot telegram.User) 
 	return request, admissionAccepted
 }
 
-func (c *assistant) allow(userID int64) bool {
+func (c *telegramAssistant) allow(userID int64) bool {
 	return c.allowAt(userID, time.Now())
 }
 
-func (c *assistant) allowAt(userID int64, now time.Time) bool {
+func (c *telegramAssistant) allowAt(userID int64, now time.Time) bool {
 	// The lock makes checking and consuming the user and global buckets one
 	// decision; concurrent callers cannot spend the same available capacity.
 	c.mu.Lock()
@@ -295,7 +297,7 @@ func newRateLimiter(requests int, window time.Duration, burst int) *rate.Limiter
 	return rate.NewLimiter(refill, burst)
 }
 
-func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
+func (c *telegramAssistant) handle(ctx context.Context, request telegramAssistantRequest) bool {
 	// Telegram typing is refreshed independently while completion is in flight,
 	// then joined before any result is handled.
 	typingCtx, stopTyping := context.WithCancel(ctx)
@@ -316,7 +318,7 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	messages := current.messages()
 	storedBefore := append([]deepseek.Message(nil), messages...)
 	if len(messages) > 0 {
-		c.metrics.observeAssistantContext("history")
+		c.metrics.observeAssistantContext(componentTelegramAssistant, "history")
 	}
 	userAlias := current.participantAlias(request.UserID, request.Username, request.FirstName)
 	if request.ReplyUserID != 0 {
@@ -327,18 +329,18 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	}
 	userMessage, hasReplyContext := current.userMessage(c.cfg.Name, request)
 	if hasReplyContext {
-		c.metrics.observeAssistantContext("reply")
+		c.metrics.observeAssistantContext(componentTelegramAssistant, "reply")
 	}
 	var externalContext string
 	usedPtchanContext := false
-	if contextText, ok := c.ptchan.contextForRequest(ctx, request); ok {
-		c.metrics.observeAssistantContext("ptchan")
+	if contextText, ok := c.ptchan.ForText(ctx, assistant.PtchanContextRequest{Text: request.Text, ReplyText: request.ReplyText}); ok {
+		c.metrics.observeAssistantContext(componentTelegramAssistant, "ptchan")
 		externalContext = contextText
 		usedPtchanContext = true
 	}
 	messages = append(messages, deepseek.Message{Role: deepseek.RoleUser, Content: formatTelegramCurrentRequest(userAlias, userMessage, len(storedBefore)/2, hasReplyContext, externalContext)})
 	systemPrompt := c.cfg.SystemPrompt
-	trace := &assistantTrace{
+	trace := &assistant.Trace{
 		StartedAt:     startedAt,
 		MessageID:     request.MessageID,
 		ThreadID:      request.MessageThreadID,
@@ -353,18 +355,18 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	}
 	defer func() { c.dumpTrace(trace) }()
 	if c.cfg.LogMemory {
-		c.logger.Debug("assistant memory system prompt", "content", systemPrompt)
+		c.logger.Debug("telegram assistant memory system prompt", "content", systemPrompt)
 	}
 	c.logMemory("request", key, messages)
 	completion, err := c.completer.Complete(ctx, systemPrompt, messages)
 	trace.Completion = completion
 	stopTyping()
 	<-typingDone
-	c.metrics.observeAICompletion(time.Since(startedAt), completion, err)
+	c.metrics.observeModelCompletion(componentTelegramAssistant, "deepseek", c.modelName, time.Since(startedAt), completion, err)
 	if err != nil {
 		trace.Outcome = "completion error"
 		trace.Err = err
-		c.logger.Warn("assistant completion failed", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "error", err)
+		c.logger.Warn("telegram assistant completion failed", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "error", err)
 		if ctx.Err() != nil {
 			c.discardEmptyConversation(key)
 			return false
@@ -377,10 +379,10 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	text, ok := c.completionText(completion)
 	generated := completion.FinishReason == deepseek.FinishStop || completion.FinishReason == deepseek.FinishLength
 	if !ok {
-		c.logger.Warn("assistant completion has unexpected finish reason", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "finish_reason", completion.FinishReason)
+		c.logger.Warn("telegram assistant completion has unexpected finish reason", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "finish_reason", completion.FinishReason)
 		text = c.text.Text(localization.AssistantUnexpectedFailure, "I couldn't answer that right now. Apparently even machines have off days.")
 	}
-	renderedText := truncateRunes(current.renderAliases(text), 4096)
+	renderedText := assistant.TruncateRunes(current.renderAliases(text), 4096)
 	message := telegram.TextMessage(renderedText)
 	if generated {
 		message = telegram.MarkdownMessage(renderedText)
@@ -394,59 +396,59 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	trace.Outcome = "stored"
 	trace.StoredAfter = current.messages()
 	trace.RemovedExchanges = removed
-	c.metrics.setActiveConversations(len(c.history))
+	c.metrics.setActiveConversations(componentTelegramAssistant, len(c.history))
 	if removed > 0 && c.cfg.LogMemory {
-		c.logger.Debug("assistant memory evicted", "chat_id", key.chatID, "thread_id", key.threadID, "removed", removed, "remaining", len(current.exchanges), "runes", current.runes())
+		c.logger.Debug("telegram assistant memory evicted", "chat_id", key.chatID, "thread_id", key.threadID, "removed", removed, "remaining", len(current.exchanges), "runes", current.runes())
 	}
 	c.logMemory("stored", key, current.messages())
 	return true
 }
 
-func (c *assistant) dumpTrace(trace *assistantTrace) {
+func (c *telegramAssistant) dumpTrace(trace *assistant.Trace) {
 	if c.traces == nil {
 		return
 	}
-	path, err := c.traces.dump(trace)
+	path, err := c.traces.Dump(trace)
 	if err != nil {
-		c.logger.Warn("assistant trace dump failed", "message_id", trace.MessageID, "thread_id", trace.ThreadID, "error", err)
+		c.logger.Warn("telegram assistant trace dump failed", "message_id", trace.MessageID, "thread_id", trace.ThreadID, "error", err)
 		return
 	}
-	c.logger.Info("assistant trace dumped", "trace_id", filepath.Base(path), "message_id", trace.MessageID, "thread_id", trace.ThreadID, "path", path)
+	c.logger.Info("telegram assistant trace dumped", "trace_id", filepath.Base(path), "message_id", trace.MessageID, "thread_id", trace.ThreadID, "path", path)
 }
 
-func (c *assistant) discardEmptyConversation(key conversationKey) {
+func (c *telegramAssistant) discardEmptyConversation(key conversationKey) {
 	conversation := c.history[key]
 	if conversation == nil || len(conversation.exchanges) == 0 {
 		delete(c.history, key)
 	}
 }
 
-func (c *assistant) expireConversations(now time.Time) {
+func (c *telegramAssistant) expireConversations(now time.Time) {
 	for existingKey, conversation := range c.history {
 		removed := conversation.expire(now, c.cfg.ConversationTTL)
 		if removed > 0 && c.cfg.LogMemory {
-			c.logger.Debug("assistant memory expired", "chat_id", existingKey.chatID, "thread_id", existingKey.threadID, "removed", removed, "remaining", len(conversation.exchanges))
+			c.logger.Debug("telegram assistant memory expired", "chat_id", existingKey.chatID, "thread_id", existingKey.threadID, "removed", removed, "remaining", len(conversation.exchanges))
 		}
 		if len(conversation.exchanges) == 0 {
 			delete(c.history, existingKey)
 			continue
 		}
 	}
-	c.metrics.setActiveConversations(len(c.history))
+	c.metrics.setActiveConversations(componentTelegramAssistant, len(c.history))
 }
 
-func (c *assistant) logMemory(stage string, key conversationKey, messages []deepseek.Message) {
+func (c *telegramAssistant) logMemory(stage string, key conversationKey, messages []deepseek.Message) {
 	if !c.cfg.LogMemory {
 		return
 	}
 	conversation := c.history[key]
-	c.logger.Debug("assistant memory", "stage", stage, "chat_id", key.chatID, "thread_id", key.threadID, "exchanges", len(conversation.exchanges), "participants", len(conversation.participants), "mentions", len(conversation.mentions), "messages", len(messages))
+	c.logger.Debug("telegram assistant memory", "stage", stage, "chat_id", key.chatID, "thread_id", key.threadID, "exchanges", len(conversation.exchanges), "participants", len(conversation.participants), "mentions", len(conversation.mentions), "messages", len(messages))
 	for i, message := range messages {
-		c.logger.Debug("assistant memory message", "stage", stage, "index", i, "role", message.Role, "content", message.Content)
+		c.logger.Debug("telegram assistant memory message", "stage", stage, "index", i, "role", message.Role, "content", message.Content)
 	}
 }
 
-func (c *assistant) showTyping(ctx context.Context, request assistantRequest) {
+func (c *telegramAssistant) showTyping(ctx context.Context, request telegramAssistantRequest) {
 	ticker := time.NewTicker(typingInterval)
 	defer ticker.Stop()
 
@@ -462,7 +464,7 @@ func (c *assistant) showTyping(ctx context.Context, request assistantRequest) {
 	}
 }
 
-func (c *assistant) replyToRejection(ctx context.Context, message *telegram.IncomingMessage, result admissionResult) {
+func (c *telegramAssistant) replyToRejection(ctx context.Context, message *telegram.IncomingMessage, result admissionResult) {
 	var text string
 	switch result {
 	case admissionTooLong:
@@ -483,11 +485,11 @@ func (c *assistant) replyToRejection(ctx context.Context, message *telegram.Inco
 		MessageThreadID:  message.MessageThreadID,
 	})
 	if err != nil && ctx.Err() == nil {
-		c.logger.Warn("send assistant rejection failed", "message_id", message.ID, "chat", message.Chat.Title, "chat_id", c.cfg.DiscussionChatID, "error", err)
+		c.logger.Warn("send telegram assistant rejection failed", "message_id", message.ID, "chat", message.Chat.Title, "chat_id", c.cfg.DiscussionChatID, "error", err)
 	}
 }
 
-func (c *assistant) sendReply(ctx context.Context, request assistantRequest, message telegram.OutgoingMessage) bool {
+func (c *telegramAssistant) sendReply(ctx context.Context, request telegramAssistantRequest, message telegram.OutgoingMessage) bool {
 	err := c.sender.Send(ctx, telegram.SendRequest{
 		ChatID:           c.cfg.DiscussionChatID,
 		Message:          message,
@@ -495,24 +497,17 @@ func (c *assistant) sendReply(ctx context.Context, request assistantRequest, mes
 		MessageThreadID:  request.MessageThreadID,
 	})
 	if err != nil {
-		c.metrics.observeAssistantResponse(metricResultError)
-		c.logger.Warn("send assistant reply failed", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "error", err)
+		c.metrics.observeAssistantReply(componentTelegramAssistant, metricResultError)
+		c.logger.Warn("send telegram assistant reply failed", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "error", err)
 		return false
 	}
 
-	c.metrics.observeAssistantResponse(metricResultSuccess)
-	c.logger.Info("assistant message answered", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "user_id", request.UserID)
+	c.metrics.observeAssistantReply(componentTelegramAssistant, metricResultSuccess)
+	c.logger.Info("telegram assistant message answered", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "user_id", request.UserID)
 	return true
 }
 
-func truncateRunes(text string, limit int) string {
-	if utf8.RuneCountInString(text) <= limit {
-		return text
-	}
-	return string([]rune(text)[:limit-1]) + "…"
-}
-
-func (c *assistant) completionText(completion deepseek.Completion) (string, bool) {
+func (c *telegramAssistant) completionText(completion deepseek.Completion) (string, bool) {
 	switch completion.FinishReason {
 	case deepseek.FinishStop, deepseek.FinishLength:
 		return completion.Text, completion.Text != ""

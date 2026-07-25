@@ -11,21 +11,23 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"martie/internal/assistant"
 	"martie/internal/localization"
 	"martie/internal/miau"
 	"martie/internal/ptchan"
 )
 
 type Config struct {
-	Locale    localization.Locale
-	Ptchan    PtchanConfig
-	Telegram  TelegramConfig
-	Assistant AssistantConfig
-	DeepSeek  DeepSeekConfig
-	Gateway   GatewayConfig
-	Streams   StreamsConfig
-	Runtime   RuntimeConfig
-	Storage   StorageConfig
+	Locale            localization.Locale
+	Ptchan            PtchanConfig
+	Telegram          TelegramConfig
+	TelegramAssistant TelegramAssistantConfig
+	PtchanAssistant   PtchanAssistantConfig
+	DeepSeek          DeepSeekConfig
+	Gateway           GatewayConfig
+	Streams           StreamsConfig
+	Runtime           RuntimeConfig
+	Storage           StorageConfig
 }
 
 type PtchanConfig struct {
@@ -40,7 +42,7 @@ type TelegramConfig struct {
 	NotificationChatID int64
 }
 
-type AssistantConfig struct {
+type TelegramAssistantConfig struct {
 	Name               string
 	DiscussionChatID   int64
 	AllowAllUsers      bool
@@ -59,19 +61,19 @@ type AssistantConfig struct {
 	PtchanContext      PtchanContextConfig
 }
 
-type AssistantTraceConfig struct {
-	Enabled  bool
-	Dir      string
-	MaxFiles int
+type PtchanAssistantConfig struct {
+	Name          string
+	Mentions      []string
+	SystemPrompt  string
+	MaxInputRunes int
+	LogMemory     bool
+	PtchanContext PtchanContextConfig
+	Trace         AssistantTraceConfig
 }
 
-type PtchanContextConfig struct {
-	Enabled    bool
-	BaseURL    string
-	GatewayURL string
-	Timeout    time.Duration
-	MaxReplies int
-}
+type AssistantTraceConfig = assistant.TraceConfig
+
+type PtchanContextConfig = assistant.PtchanContextConfig
 
 type DeepSeekConfig struct {
 	APIKey    string
@@ -111,9 +113,10 @@ type RuntimeConfig struct {
 type ComponentName string
 
 const (
-	componentAssistant ComponentName = "assistant"
-	componentGateway   ComponentName = "gateway"
-	componentStreams   ComponentName = "streams"
+	componentTelegramAssistant ComponentName = "telegram_assistant"
+	componentPtchanAssistant   ComponentName = "ptchan_assistant"
+	componentGateway           ComponentName = "gateway"
+	componentStreams           ComponentName = "streams"
 )
 
 type LoggingConfig struct {
@@ -133,16 +136,17 @@ type StorageConfig struct {
 }
 
 type fileConfig struct {
-	Locale    string              `toml:"locale"`
-	Name      string              `toml:"name"`
-	Ptchan    filePtchanConfig    `toml:"ptchan"`
-	Telegram  fileTelegramConfig  `toml:"telegram"`
-	Assistant fileAssistantConfig `toml:"assistant"`
-	DeepSeek  fileDeepSeekConfig  `toml:"deepseek"`
-	Gateway   fileGatewayConfig   `toml:"gateway"`
-	Streams   fileStreamsConfig   `toml:"streams"`
-	Runtime   fileRuntimeConfig   `toml:"runtime"`
-	Storage   fileStorageConfig   `toml:"storage"`
+	Locale            string                      `toml:"locale"`
+	Name              string                      `toml:"name"`
+	Ptchan            filePtchanConfig            `toml:"ptchan"`
+	Telegram          fileTelegramConfig          `toml:"telegram"`
+	TelegramAssistant fileTelegramAssistantConfig `toml:"telegram_assistant"`
+	PtchanAssistant   filePtchanAssistantConfig   `toml:"ptchan_assistant"`
+	DeepSeek          fileDeepSeekConfig          `toml:"deepseek"`
+	Gateway           fileGatewayConfig           `toml:"gateway"`
+	Streams           fileStreamsConfig           `toml:"streams"`
+	Runtime           fileRuntimeConfig           `toml:"runtime"`
+	Storage           fileStorageConfig           `toml:"storage"`
 }
 
 type filePtchanConfig struct {
@@ -158,12 +162,21 @@ type fileTelegramConfig struct {
 	AllowAllUsers      bool    `toml:"allow_all_users"`
 }
 
-type fileAssistantConfig struct {
+type fileTelegramAssistantConfig struct {
 	MaxInputRunes int                 `toml:"max_input_runes"`
 	LogMemory     bool                `toml:"log_memory"`
 	SystemPrompt  string              `toml:"system_prompt"`
 	RateLimit     fileRateLimitConfig `toml:"rate_limit"`
 	Memory        fileMemoryConfig    `toml:"memory"`
+	PtchanContext *filePtchanContext  `toml:"ptchan_context"`
+	Trace         *fileAssistantTrace `toml:"trace"`
+}
+
+type filePtchanAssistantConfig struct {
+	Mentions      []string            `toml:"mentions"`
+	MaxInputRunes int                 `toml:"max_input_runes"`
+	LogMemory     bool                `toml:"log_memory"`
+	SystemPrompt  string              `toml:"system_prompt"`
 	PtchanContext *filePtchanContext  `toml:"ptchan_context"`
 	Trace         *fileAssistantTrace `toml:"trace"`
 }
@@ -250,7 +263,7 @@ func defaultFileConfig() fileConfig {
 			GatewayURL:      "http://ptchan-gateway:8080",
 			IntegrationName: "martie",
 		},
-		Assistant: fileAssistantConfig{
+		TelegramAssistant: fileTelegramAssistantConfig{
 			MaxInputRunes: 4096,
 			Memory: fileMemoryConfig{
 				TTL:              "10m",
@@ -263,6 +276,10 @@ func defaultFileConfig() fileConfig {
 				GlobalLimit: 100,
 				GlobalBurst: 12,
 			},
+		},
+		PtchanAssistant: filePtchanAssistantConfig{
+			Mentions:      []string{"@martie"},
+			MaxInputRunes: 4096,
 		},
 		DeepSeek: fileDeepSeekConfig{
 			Model:     "deepseek-v4-flash",
@@ -286,7 +303,7 @@ func defaultFileConfig() fileConfig {
 				Format: string(LogText),
 			},
 		},
-		Storage: fileStorageConfig{SQLitePath: "data/bot.db"},
+		Storage: fileStorageConfig{SQLitePath: "data/martie.db"},
 		Streams: fileStreamsConfig{EndMissThreshold: 2, PollInterval: "60s"},
 	}
 }
@@ -318,8 +335,10 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	ptchanContext := assistantPtchanContextConfig(raw.Assistant.PtchanContext)
-	trace := assistantTraceConfig(raw.Assistant.Trace)
+	telegramPtchanContext := assistantPtchanContextConfig(raw.TelegramAssistant.PtchanContext)
+	telegramTrace := assistantTraceConfig(raw.TelegramAssistant.Trace)
+	ptchanContext := assistantPtchanContextConfig(raw.PtchanAssistant.PtchanContext)
+	ptchanTrace := assistantTraceConfig(raw.PtchanAssistant.Trace)
 	cfg := Config{
 		Locale: locale,
 		Ptchan: PtchanConfig{
@@ -332,25 +351,42 @@ func LoadConfig() (Config, error) {
 			BotToken:           strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 			NotificationChatID: raw.Telegram.NotificationChatID,
 		},
-		Assistant: AssistantConfig{
+		TelegramAssistant: TelegramAssistantConfig{
 			Name:               strings.TrimSpace(raw.Name),
 			DiscussionChatID:   raw.Telegram.DiscussionChatID,
 			AllowAllUsers:      raw.Telegram.AllowAllUsers,
 			AllowedUserIDs:     raw.Telegram.AllowedUserIDs,
-			UserRequestLimit:   raw.Assistant.RateLimit.UserLimit,
-			UserRequestBurst:   raw.Assistant.RateLimit.UserBurst,
-			GlobalRequestLimit: raw.Assistant.RateLimit.GlobalLimit,
-			GlobalRequestBurst: raw.Assistant.RateLimit.GlobalBurst,
-			MaxInputRunes:      raw.Assistant.MaxInputRunes,
-			LogMemory:          raw.Assistant.LogMemory,
+			UserRequestLimit:   raw.TelegramAssistant.RateLimit.UserLimit,
+			UserRequestBurst:   raw.TelegramAssistant.RateLimit.UserBurst,
+			GlobalRequestLimit: raw.TelegramAssistant.RateLimit.GlobalLimit,
+			GlobalRequestBurst: raw.TelegramAssistant.RateLimit.GlobalBurst,
+			MaxInputRunes:      raw.TelegramAssistant.MaxInputRunes,
+			LogMemory:          raw.TelegramAssistant.LogMemory,
 			Trace: AssistantTraceConfig{
-				Enabled:  raw.Assistant.Trace != nil,
-				Dir:      filepath.Clean(strings.TrimSpace(trace.Dir)),
-				MaxFiles: trace.MaxFiles,
+				Enabled:  raw.TelegramAssistant.Trace != nil,
+				Dir:      filepath.Clean(strings.TrimSpace(telegramTrace.Dir)),
+				MaxFiles: telegramTrace.MaxFiles,
 			},
-			HistoryExchanges: raw.Assistant.Memory.HistoryExchanges,
+			HistoryExchanges: raw.TelegramAssistant.Memory.HistoryExchanges,
 			PtchanContext: PtchanContextConfig{
-				Enabled:    raw.Assistant.PtchanContext != nil,
+				Enabled:    raw.TelegramAssistant.PtchanContext != nil,
+				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
+				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
+				MaxReplies: telegramPtchanContext.MaxReplies,
+			},
+		},
+		PtchanAssistant: PtchanAssistantConfig{
+			Name:          strings.TrimSpace(raw.Name),
+			Mentions:      cleanMentions(raw.PtchanAssistant.Mentions),
+			MaxInputRunes: raw.PtchanAssistant.MaxInputRunes,
+			LogMemory:     raw.PtchanAssistant.LogMemory,
+			Trace: AssistantTraceConfig{
+				Enabled:  raw.PtchanAssistant.Trace != nil,
+				Dir:      filepath.Clean(strings.TrimSpace(ptchanTrace.Dir)),
+				MaxFiles: ptchanTrace.MaxFiles,
+			},
+			PtchanContext: PtchanContextConfig{
+				Enabled:    raw.PtchanAssistant.PtchanContext != nil,
 				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
 				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
 				MaxReplies: ptchanContext.MaxReplies,
@@ -379,7 +415,8 @@ func LoadConfig() (Config, error) {
 		Storage: StorageConfig{SQLitePath: filepath.Clean(strings.TrimSpace(raw.Storage.SQLitePath))},
 	}
 
-	cfg.Assistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Assistant.SystemPrompt), "{{name}}", cfg.Assistant.Name)
+	cfg.TelegramAssistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.TelegramAssistant.SystemPrompt), "{{name}}", cfg.TelegramAssistant.Name)
+	cfg.PtchanAssistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.PtchanAssistant.SystemPrompt), "{{name}}", cfg.PtchanAssistant.Name)
 	if cfg.Ptchan.BaseURL == "" {
 		return Config{}, fmt.Errorf("ptchan.base_url is required")
 	}
@@ -389,26 +426,41 @@ func LoadConfig() (Config, error) {
 	if cfg.Ptchan.IntegrationName == "" {
 		return Config{}, fmt.Errorf("ptchan.integration_name is required")
 	}
-	if cfg.Assistant.MaxInputRunes <= 0 {
-		return Config{}, fmt.Errorf("assistant.max_input_runes must be positive")
+	if cfg.TelegramAssistant.MaxInputRunes <= 0 {
+		return Config{}, fmt.Errorf("telegram_assistant.max_input_runes must be positive")
 	}
-	if cfg.Assistant.HistoryExchanges <= 0 {
-		return Config{}, fmt.Errorf("assistant.memory.history_exchanges must be positive")
+	if cfg.TelegramAssistant.HistoryExchanges <= 0 {
+		return Config{}, fmt.Errorf("telegram_assistant.memory.history_exchanges must be positive")
 	}
-	if cfg.Assistant.UserRequestLimit <= 0 || cfg.Assistant.UserRequestBurst <= 0 || cfg.Assistant.UserRequestBurst > cfg.Assistant.UserRequestLimit {
-		return Config{}, fmt.Errorf("assistant.rate_limit.user_burst must be positive and no greater than user_limit")
+	if cfg.TelegramAssistant.UserRequestLimit <= 0 || cfg.TelegramAssistant.UserRequestBurst <= 0 || cfg.TelegramAssistant.UserRequestBurst > cfg.TelegramAssistant.UserRequestLimit {
+		return Config{}, fmt.Errorf("telegram_assistant.rate_limit.user_burst must be positive and no greater than user_limit")
 	}
-	if cfg.Assistant.GlobalRequestLimit <= 0 || cfg.Assistant.GlobalRequestBurst <= 0 || cfg.Assistant.GlobalRequestBurst > cfg.Assistant.GlobalRequestLimit {
-		return Config{}, fmt.Errorf("assistant.rate_limit.global_burst must be positive and no greater than global_limit")
+	if cfg.TelegramAssistant.GlobalRequestLimit <= 0 || cfg.TelegramAssistant.GlobalRequestBurst <= 0 || cfg.TelegramAssistant.GlobalRequestBurst > cfg.TelegramAssistant.GlobalRequestLimit {
+		return Config{}, fmt.Errorf("telegram_assistant.rate_limit.global_burst must be positive and no greater than global_limit")
 	}
-	if cfg.Assistant.PtchanContext.MaxReplies <= 0 {
-		return Config{}, fmt.Errorf("assistant.ptchan_context.max_replies must be positive")
+	if cfg.TelegramAssistant.PtchanContext.MaxReplies <= 0 {
+		return Config{}, fmt.Errorf("telegram_assistant.ptchan_context.max_replies must be positive")
 	}
-	if cfg.Assistant.Trace.MaxFiles <= 0 {
-		return Config{}, fmt.Errorf("assistant.trace.max_files must be positive")
+	if cfg.TelegramAssistant.Trace.MaxFiles <= 0 {
+		return Config{}, fmt.Errorf("telegram_assistant.trace.max_files must be positive")
 	}
-	if cfg.Assistant.Trace.Enabled && cfg.Assistant.Trace.Dir == "." {
-		return Config{}, fmt.Errorf("assistant.trace.dir is required when enabled")
+	if cfg.TelegramAssistant.Trace.Enabled && cfg.TelegramAssistant.Trace.Dir == "." {
+		return Config{}, fmt.Errorf("telegram_assistant.trace.dir is required when enabled")
+	}
+	if cfg.PtchanAssistant.MaxInputRunes <= 0 {
+		return Config{}, fmt.Errorf("ptchan_assistant.max_input_runes must be positive")
+	}
+	if len(cfg.PtchanAssistant.Mentions) == 0 {
+		return Config{}, fmt.Errorf("ptchan_assistant.mentions requires at least one mention")
+	}
+	if cfg.PtchanAssistant.PtchanContext.MaxReplies <= 0 {
+		return Config{}, fmt.Errorf("ptchan_assistant.ptchan_context.max_replies must be positive")
+	}
+	if cfg.PtchanAssistant.Trace.MaxFiles <= 0 {
+		return Config{}, fmt.Errorf("ptchan_assistant.trace.max_files must be positive")
+	}
+	if cfg.PtchanAssistant.Trace.Enabled && cfg.PtchanAssistant.Trace.Dir == "." {
+		return Config{}, fmt.Errorf("ptchan_assistant.trace.dir is required when enabled")
 	}
 	if cfg.DeepSeek.Model == "" {
 		return Config{}, fmt.Errorf("deepseek.model is required")
@@ -439,7 +491,7 @@ func LoadConfig() (Config, error) {
 	for _, value := range raw.Runtime.Components {
 		component := ComponentName(strings.TrimSpace(value))
 		switch component {
-		case componentGateway, componentStreams, componentAssistant:
+		case componentGateway, componentStreams, componentTelegramAssistant, componentPtchanAssistant:
 		default:
 			return Config{}, fmt.Errorf("runtime.components contains unknown component %q", value)
 		}
@@ -464,13 +516,16 @@ func LoadConfig() (Config, error) {
 		cfg.Streams.Channels = append(cfg.Streams.Channels, miau.Channel(stream))
 	}
 
-	if cfg.Assistant.ConversationTTL, err = positiveDuration("assistant.memory.ttl", raw.Assistant.Memory.TTL); err != nil {
+	if cfg.TelegramAssistant.ConversationTTL, err = positiveDuration("telegram_assistant.memory.ttl", raw.TelegramAssistant.Memory.TTL); err != nil {
 		return Config{}, err
 	}
-	if cfg.Assistant.RateLimitWindow, err = positiveDuration("assistant.rate_limit.window", raw.Assistant.RateLimit.Window); err != nil {
+	if cfg.TelegramAssistant.RateLimitWindow, err = positiveDuration("telegram_assistant.rate_limit.window", raw.TelegramAssistant.RateLimit.Window); err != nil {
 		return Config{}, err
 	}
-	if cfg.Assistant.PtchanContext.Timeout, err = positiveDuration("assistant.ptchan_context.timeout", ptchanContext.Timeout); err != nil {
+	if cfg.TelegramAssistant.PtchanContext.Timeout, err = positiveDuration("telegram_assistant.ptchan_context.timeout", telegramPtchanContext.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.PtchanAssistant.PtchanContext.Timeout, err = positiveDuration("ptchan_assistant.ptchan_context.timeout", ptchanContext.Timeout); err != nil {
 		return Config{}, err
 	}
 	if cfg.DeepSeek.Timeout, err = positiveDuration("deepseek.timeout", raw.DeepSeek.Timeout); err != nil {
@@ -495,7 +550,7 @@ func LoadConfig() (Config, error) {
 func assistantPtchanContextConfig(raw *filePtchanContext) ptchanContextFileConfig {
 	cfg := ptchanContextFileConfig{
 		Timeout:    "5s",
-		MaxReplies: defaultPtchanMaxReplies,
+		MaxReplies: assistant.DefaultMaxReplies,
 	}
 	if raw == nil {
 		return cfg
@@ -546,7 +601,7 @@ func (c Config) ValidateRun() error {
 	if len(c.Runtime.Components) == 0 {
 		return fmt.Errorf("runtime.components must contain at least one component")
 	}
-	if c.Telegram.BotToken == "" {
+	if (c.runs(componentGateway) || c.runs(componentStreams) || c.runs(componentTelegramAssistant)) && c.Telegram.BotToken == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
 	}
 	if (c.runs(componentGateway) || c.runs(componentStreams)) && c.Telegram.NotificationChatID == 0 {
@@ -558,26 +613,39 @@ func (c Config) ValidateRun() error {
 	if c.runs(componentGateway) && c.Ptchan.Secret == "" {
 		return fmt.Errorf("%s is required for gateway", integrationSecretEnv(c.Ptchan.IntegrationName))
 	}
-	if !c.runs(componentAssistant) {
-		return nil
+	if c.runs(componentTelegramAssistant) {
+		if c.TelegramAssistant.Name == "" {
+			return fmt.Errorf("name is required for telegram_assistant")
+		}
+		if c.TelegramAssistant.SystemPrompt == "" {
+			return fmt.Errorf("telegram_assistant.system_prompt is required for telegram_assistant")
+		}
+		if c.TelegramAssistant.DiscussionChatID == 0 {
+			return fmt.Errorf("telegram.discussion_chat_id is required for telegram_assistant")
+		}
+		if !c.TelegramAssistant.AllowAllUsers && len(c.TelegramAssistant.AllowedUserIDs) == 0 {
+			return fmt.Errorf("telegram.allowed_user_ids requires at least one user for telegram_assistant")
+		}
+		if c.DeepSeek.APIKey == "" {
+			return fmt.Errorf("DEEPSEEK_API_KEY is required for telegram_assistant")
+		}
+		if c.TelegramAssistant.PtchanContext.Enabled && c.Ptchan.Secret == "" {
+			return fmt.Errorf("%s is required for telegram_assistant ptchan context", integrationSecretEnv(c.Ptchan.IntegrationName))
+		}
 	}
-	if c.Assistant.Name == "" {
-		return fmt.Errorf("name is required for assistant")
-	}
-	if c.Assistant.SystemPrompt == "" {
-		return fmt.Errorf("assistant.system_prompt is required for assistant")
-	}
-	if c.Assistant.DiscussionChatID == 0 {
-		return fmt.Errorf("telegram.discussion_chat_id is required for assistant")
-	}
-	if !c.Assistant.AllowAllUsers && len(c.Assistant.AllowedUserIDs) == 0 {
-		return fmt.Errorf("telegram.allowed_user_ids requires at least one user for assistant")
-	}
-	if c.DeepSeek.APIKey == "" {
-		return fmt.Errorf("DEEPSEEK_API_KEY is required for assistant")
-	}
-	if c.Assistant.PtchanContext.Enabled && c.Ptchan.Secret == "" {
-		return fmt.Errorf("%s is required for assistant ptchan context", integrationSecretEnv(c.Ptchan.IntegrationName))
+	if c.runs(componentPtchanAssistant) {
+		if c.PtchanAssistant.Name == "" {
+			return fmt.Errorf("name is required for ptchan_assistant")
+		}
+		if c.PtchanAssistant.SystemPrompt == "" {
+			return fmt.Errorf("ptchan_assistant.system_prompt is required for ptchan_assistant")
+		}
+		if c.DeepSeek.APIKey == "" {
+			return fmt.Errorf("DEEPSEEK_API_KEY is required for ptchan_assistant")
+		}
+		if c.Ptchan.Secret == "" {
+			return fmt.Errorf("%s is required for ptchan_assistant", integrationSecretEnv(c.Ptchan.IntegrationName))
+		}
 	}
 	return nil
 }
@@ -601,6 +669,24 @@ func cleanGatewayPath(path string) string {
 		return path
 	}
 	return "/" + path
+}
+
+func cleanMentions(values []string) []string {
+	mentions := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		mention := strings.TrimSpace(value)
+		if mention == "" {
+			continue
+		}
+		key := strings.ToLower(mention)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		mentions = append(mentions, mention)
+	}
+	return mentions
 }
 
 func positiveDuration(name, value string) (time.Duration, error) {

@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
+func TestThreadReaderReadThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	var gotRequest *http.Request
-	client := &ContextClient{
+	client := &ThreadReader{
 		baseURL:     "http://gateway.test",
 		integration: "martie",
 		secret:      "secret",
@@ -35,7 +35,7 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 		})},
 	}
 
-	thread, err := client.FetchThread(context.Background(), "i", 100)
+	thread, err := client.ReadThread(context.Background(), "i", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,9 +47,9 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	}
 	timestamp := gotRequest.Header.Get("x-ptchan-timestamp")
 	if gotRequest.Header.Get("x-ptchan-integration") != "martie" || timestamp == "" || gotRequest.Header.Get("x-ptchan-signature") == "" {
-		t.Fatalf("missing signed context headers: %v", gotRequest.Header)
+		t.Fatalf("missing signed thread read headers: %v", gotRequest.Header)
 	}
-	wantSignature := contextSignature("secret", timestamp, http.MethodGet, "/integration/v1/threads/i/100?limit=3")
+	wantSignature := integrationSignature("secret", timestamp, http.MethodGet, "/integration/v1/threads/i/100?limit=3")
 	if got := gotRequest.Header.Get("x-ptchan-signature"); got != wantSignature {
 		t.Fatalf("signature = %q, want %q", got, wantSignature)
 	}
@@ -58,8 +58,8 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	}
 }
 
-func TestContextClientFetchThreadIncludesStatusBody(t *testing.T) {
-	client := &ContextClient{
+func TestThreadReaderReadThreadIncludesStatusBody(t *testing.T) {
+	client := &ThreadReader{
 		baseURL:     "http://gateway.test",
 		integration: "martie",
 		secret:      "secret",
@@ -73,15 +73,15 @@ func TestContextClientFetchThreadIncludesStatusBody(t *testing.T) {
 		})},
 	}
 
-	_, err := client.FetchThread(context.Background(), "i", 100)
+	_, err := client.ReadThread(context.Background(), "i", 100)
 	if err == nil || !strings.Contains(err.Error(), "403 Forbidden: board blocked by policy") {
-		t.Fatalf("FetchThread() error = %v, want status body", err)
+		t.Fatalf("ReadThread() error = %v, want status body", err)
 	}
 }
 
-func TestContextClientCheckReachableUsesHealthEndpoint(t *testing.T) {
+func TestThreadReaderCheckReachableUsesHealthEndpoint(t *testing.T) {
 	var gotPath string
-	client := &ContextClient{
+	client := &ThreadReader{
 		baseURL: "http://gateway.test",
 		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			gotPath = req.URL.Path
@@ -102,8 +102,8 @@ func TestContextClientCheckReachableUsesHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestContextClientCheckReachableReportsRequestFailure(t *testing.T) {
-	client := &ContextClient{
+func TestThreadReaderCheckReachableReportsRequestFailure(t *testing.T) {
+	client := &ThreadReader{
 		baseURL: "http://gateway.test",
 		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return nil, errors.New("lookup failed")

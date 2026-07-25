@@ -1,4 +1,4 @@
-package app
+package assistant
 
 import (
 	"encoding/json"
@@ -42,10 +42,10 @@ func TestPtchanContextGoldenFiles(t *testing.T) {
 			meta := readPtchanContextGoldenMeta(t, strings.TrimSuffix(fixture, filepath.Ext(fixture))+".meta")
 			cfg := PtchanContextConfig{MaxReplies: meta.MaxReplies}
 			if cfg.MaxReplies == 0 {
-				cfg.MaxReplies = defaultPtchanMaxReplies
+				cfg.MaxReplies = DefaultMaxReplies
 			}
 
-			got := formatPtchanContext(thread, meta.TargetPostID, cfg)
+			got := FormatPtchanContext(thread, meta.TargetPostID, cfg)
 			golden := strings.TrimSuffix(fixture, filepath.Ext(fixture)) + ".golden"
 			if os.Getenv("MARTIE_UPDATE_GOLDEN") == "1" {
 				if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
@@ -65,14 +65,14 @@ func TestPtchanContextGoldenFiles(t *testing.T) {
 }
 
 func ptchanContextGoldenFixtures() ([]string, error) {
-	fixtures, err := filepath.Glob(filepath.Join("testdata", "ptchan_context", "*.json"))
+	fixtures, err := filepath.Glob(filepath.Join("testdata", "*.json"))
 	if err != nil {
 		return nil, err
 	}
 	if os.Getenv("MARTIE_INCLUDE_LOCAL_GOLDEN") != "1" {
 		return fixtures, nil
 	}
-	localFixtures, err := filepath.Glob(filepath.Join("testdata", "ptchan_context", "local", "*.json"))
+	localFixtures, err := filepath.Glob(filepath.Join("testdata", "local", "*.json"))
 	if err != nil {
 		return nil, err
 	}

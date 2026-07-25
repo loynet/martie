@@ -1,4 +1,4 @@
-package app
+package assistant
 
 import (
 	"context"
@@ -14,23 +14,36 @@ import (
 )
 
 const (
-	maxPtchanPostRunes      = 800
-	maxPtchanContextRunes   = 24000
-	contextNeighborPosts    = 2
-	defaultPtchanMaxReplies = 25
+	maxPtchanPostRunes    = 800
+	maxPtchanContextRunes = 24000
+	contextNeighborPosts  = 2
+	DefaultMaxReplies     = 25
 )
 
 var externalLinkPattern = regexp.MustCompile(`https?://[^\s<>()\[\]{}|\\^]+`)
 var ptchanQuotePattern = regexp.MustCompile(`>>(\d+)`)
 
-type ptchanThreadFetcher interface {
-	FetchThread(context.Context, string, int64) (gateway.Thread, error)
+type PtchanContextConfig struct {
+	Enabled    bool
+	BaseURL    string
+	GatewayURL string
+	Timeout    time.Duration
+	MaxReplies int
 }
 
-type ptchanContextSource struct {
+type PtchanThreadReader interface {
+	ReadThread(context.Context, string, int64) (gateway.Thread, error)
+}
+
+type PtchanContext struct {
 	cfg    PtchanContextConfig
-	client ptchanThreadFetcher
+	client PtchanThreadReader
 	logger *slog.Logger
+}
+
+type PtchanContextRequest struct {
+	Text      string
+	ReplyText string
 }
 
 type selectedPtchanPost struct {
@@ -43,7 +56,7 @@ type renderedPtchanPost struct {
 	truncated bool
 }
 
-func newPtchanContextSource(cfg PtchanContextConfig, client ptchanThreadFetcher, logger *slog.Logger) *ptchanContextSource {
+func NewPtchanContext(cfg PtchanContextConfig, client PtchanThreadReader, logger *slog.Logger) *PtchanContext {
 	if !cfg.Enabled {
 		logger.Info("ptchan context disabled")
 		return nil
@@ -53,36 +66,53 @@ func newPtchanContextSource(cfg PtchanContextConfig, client ptchanThreadFetcher,
 		return nil
 	}
 	logger.Info("ptchan context enabled", "base_url", cfg.BaseURL, "gateway_url", cfg.GatewayURL, "timeout", cfg.Timeout)
-	return &ptchanContextSource{
+	return &PtchanContext{
 		cfg:    cfg,
 		client: client,
 		logger: logger,
 	}
 }
 
-func (s *ptchanContextSource) contextForRequest(ctx context.Context, request assistantRequest) (string, bool) {
+func (s *PtchanContext) ForPost(ctx context.Context, board string, threadID, postID int64) (string, bool) {
 	if s == nil {
 		return "", false
 	}
-	link, ok := threadLinkForRequest(request, s.cfg.BaseURL)
+	s.logger.Info("ptchan thread reading for assistant context", "board", board, "thread_id", threadID, "post_id", postID)
+	fetchCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+	thread, err := s.client.ReadThread(fetchCtx, board, threadID)
+	if err != nil {
+		s.logger.Warn("ptchan thread read failed", "board", board, "thread_id", threadID, "error", err)
+		return "", false
+	}
+
+	s.logger.Info("ptchan thread read for assistant context", "board", thread.Board, "thread_id", thread.ThreadID, "posts", len(thread.Posts), "truncated", thread.Truncated)
+	return FormatPtchanContext(thread, postID, s.cfg), true
+}
+
+func (s *PtchanContext) ForText(ctx context.Context, request PtchanContextRequest) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	link, ok := PtchanThreadLinkForRequest(request, s.cfg.BaseURL)
 	if !ok {
 		return "", false
 	}
 
-	s.logger.Info("ptchan context fetching", "board", link.Board, "thread_id", link.ThreadID, "post_id", link.PostID)
+	s.logger.Info("ptchan thread reading for assistant context", "board", link.Board, "thread_id", link.ThreadID, "post_id", link.PostID)
 	fetchCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
-	thread, err := s.client.FetchThread(fetchCtx, link.Board, link.ThreadID)
+	thread, err := s.client.ReadThread(fetchCtx, link.Board, link.ThreadID)
 	if err != nil {
-		s.logger.Warn("ptchan context fetch failed", "board", link.Board, "thread_id", link.ThreadID, "error", err)
+		s.logger.Warn("ptchan thread read failed", "board", link.Board, "thread_id", link.ThreadID, "error", err)
 		return "", false
 	}
 
-	s.logger.Info("ptchan context fetched", "board", thread.Board, "thread_id", thread.ThreadID, "posts", len(thread.Posts), "truncated", thread.Truncated)
-	return formatPtchanContext(thread, link.PostID, s.cfg), true
+	s.logger.Info("ptchan thread read for assistant context", "board", thread.Board, "thread_id", thread.ThreadID, "posts", len(thread.Posts), "truncated", thread.Truncated)
+	return FormatPtchanContext(thread, link.PostID, s.cfg), true
 }
 
-func threadLinkForRequest(request assistantRequest, baseURL string) (ptchan.ThreadLink, bool) {
+func PtchanThreadLinkForRequest(request PtchanContextRequest, baseURL string) (ptchan.ThreadLink, bool) {
 	// Keep ptchan enrichment single-hop: only inspect Telegram text supplied
 	// with this request, never fetched ptchan context, history, or model output.
 	currentLink, hasCurrentLink := firstPtchanThreadLink(request.Text, baseURL)
@@ -133,11 +163,11 @@ func firstPtchanQuoteID(text string) int64 {
 	return id
 }
 
-func formatPtchanContext(thread gateway.Thread, targetPostID int64, cfg PtchanContextConfig) string {
-	return formatPtchanContextWithLimit(thread, targetPostID, cfg, maxPtchanContextRunes)
+func FormatPtchanContext(thread gateway.Thread, targetPostID int64, cfg PtchanContextConfig) string {
+	return FormatPtchanContextWithLimit(thread, targetPostID, cfg, maxPtchanContextRunes)
 }
 
-func formatPtchanContextWithLimit(thread gateway.Thread, targetPostID int64, cfg PtchanContextConfig, maxContextRunes int) string {
+func FormatPtchanContextWithLimit(thread gateway.Thread, targetPostID int64, cfg PtchanContextConfig, maxContextRunes int) string {
 	selected := selectedContextPosts(thread, targetPostID, cfg.MaxReplies)
 	posts := renderPtchanPostBlocks(thread, targetPostID, selected)
 	suffix := ptchanResponseRules()
@@ -273,7 +303,7 @@ func contextualPosts(posts []gateway.Post) []gateway.Post {
 func selectedContextPosts(thread gateway.Thread, targetPostID int64, maxReplies int) []selectedPtchanPost {
 	posts := contextualPosts(thread.Posts)
 	if maxReplies <= 0 {
-		maxReplies = defaultPtchanMaxReplies
+		maxReplies = DefaultMaxReplies
 	}
 	limit := maxReplies + 1
 	if limit > len(posts) {
@@ -400,7 +430,7 @@ func writePtchanPost(b *strings.Builder, thread gateway.Thread, targetPostID int
 	}
 	if subject := normalizePtchanText(post.Subject); subject != "" {
 		truncated = truncated || textExceedsRunes(subject, maxPtchanPostRunes)
-		fmt.Fprintf(b, "Subject: %s\n", truncateRunes(subject, maxPtchanPostRunes))
+		fmt.Fprintf(b, "Subject: %s\n", TruncateRunes(subject, maxPtchanPostRunes))
 	}
 	if post.AttachmentCount > 0 {
 		fmt.Fprintf(b, "Attachments: %d\n", post.AttachmentCount)
@@ -413,7 +443,7 @@ func writePtchanPost(b *strings.Builder, thread gateway.Thread, targetPostID int
 	}
 	truncated = truncated || textExceedsRunes(message, maxPtchanPostRunes)
 	b.WriteString("Message:\n")
-	writeFencedBlock(b, "ptchan-post", truncateRunes(message, maxPtchanPostRunes))
+	WriteFencedBlock(b, "ptchan-post", TruncateRunes(message, maxPtchanPostRunes))
 	b.WriteString("\n")
 	fmt.Fprintf(b, "References: %s\n", joinPostRefs(thread, post.References))
 	fmt.Fprintf(b, "Referenced by: %s\n", joinPostRefs(thread, post.ReferencedBy))
@@ -568,7 +598,7 @@ func truncateContext(text string, limit int) string {
 	}
 	const suffix = "\n[ptchan context truncated]\nEND PTCHAN CONTEXT"
 	if limit <= len([]rune(suffix))+1 {
-		return truncateRunes(text, limit)
+		return TruncateRunes(text, limit)
 	}
 	return string([]rune(text)[:limit-len([]rune(suffix))]) + suffix
 }

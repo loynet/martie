@@ -14,11 +14,11 @@ import (
 	"martie/internal/telegram"
 )
 
-func TestGatewayConsumerTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
+func TestGatewayNotifierTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 
 	thread := gateway.Event{
 		EventID: "ptchan:thread.created:i:100",
@@ -55,16 +55,16 @@ func TestGatewayConsumerTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 		},
 	}
 
-	if err := consumer.consumeEvent(context.Background(), thread); err != nil {
+	if err := consumer.consumeGatewayEvent(context.Background(), thread); err != nil {
 		t.Fatal(err)
 	}
-	if err := consumer.consumeEvent(context.Background(), firstReply); err != nil {
+	if err := consumer.consumeGatewayEvent(context.Background(), firstReply); err != nil {
 		t.Fatal(err)
 	}
 	if len(sender.requests) != 0 {
 		t.Fatalf("notifications = %d, want 0 before threshold", len(sender.requests))
 	}
-	if err := consumer.consumeEvent(context.Background(), secondReply); err != nil {
+	if err := consumer.consumeGatewayEvent(context.Background(), secondReply); err != nil {
 		t.Fatal(err)
 	}
 	if len(sender.requests) != 0 {
@@ -82,7 +82,7 @@ func TestGatewayConsumerTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 	if !ok || record.ReplyPosts != 2 || record.ReplyFiles != 1 || record.NotifiedNewAt == nil {
 		t.Fatalf("record = %+v, exists = %v", record, ok)
 	}
-	if err := consumer.consumeEvent(context.Background(), secondReply); err != nil {
+	if err := consumer.consumeGatewayEvent(context.Background(), secondReply); err != nil {
 		t.Fatal(err)
 	}
 	consumer.deliverPendingNotifications(context.Background())
@@ -91,14 +91,14 @@ func TestGatewayConsumerTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerSerializesConcurrentEvents(t *testing.T) {
+func TestGatewayNotifierSerializesConcurrentEvents(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 	consumer.cfg.Notifications.MinReplyPosts = 1000
 
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:thread.created:i:400",
 		Kind:    gateway.KindThreadCreated,
 		Post: gateway.Post{
@@ -117,7 +117,7 @@ func TestGatewayConsumerSerializesConcurrentEvents(t *testing.T) {
 		workers.Add(1)
 		go func(i int64) {
 			defer workers.Done()
-			if err := consumer.consumeEvent(context.Background(), gateway.Event{
+			if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 				EventID: "ptchan:post.created:i:" + strconv.FormatInt(401+i, 10),
 				Kind:    gateway.KindPostCreated,
 				Post: gateway.Post{
@@ -128,7 +128,7 @@ func TestGatewayConsumerSerializesConcurrentEvents(t *testing.T) {
 					Message:  "reply",
 				},
 			}); err != nil {
-				t.Errorf("consumeEvent() error = %v", err)
+				t.Errorf("consumeGatewayEvent() error = %v", err)
 			}
 		}(i)
 	}
@@ -143,14 +143,14 @@ func TestGatewayConsumerSerializesConcurrentEvents(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerWaitsForOPBeforeNotifying(t *testing.T) {
+func TestGatewayNotifierWaitsForOPBeforeNotifying(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 
 	for _, id := range []int64{501, 502} {
-		if err := consumer.consumeEvent(context.Background(), gateway.Event{
+		if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 			EventID: "ptchan:post.created:i:" + strconv.FormatInt(id, 10),
 			Kind:    gateway.KindPostCreated,
 			Post: gateway.Post{
@@ -169,7 +169,7 @@ func TestGatewayConsumerWaitsForOPBeforeNotifying(t *testing.T) {
 		t.Fatalf("notified before OP arrived")
 	}
 
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:thread.created:i:500",
 		Kind:    gateway.KindThreadCreated,
 		Post: gateway.Post{
@@ -188,15 +188,15 @@ func TestGatewayConsumerWaitsForOPBeforeNotifying(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerAppliesFiltersWhenOPArrivesLate(t *testing.T) {
+func TestGatewayNotifierAppliesFiltersWhenOPArrivesLate(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 	consumer.cfg.Notifications.Filter.KeywordDenylist = []string{"blocked"}
 
 	for _, id := range []int64{601, 602} {
-		if err := consumer.consumeEvent(context.Background(), gateway.Event{
+		if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 			EventID: "ptchan:post.created:i:" + strconv.FormatInt(id, 10),
 			Kind:    gateway.KindPostCreated,
 			Post: gateway.Post{
@@ -210,7 +210,7 @@ func TestGatewayConsumerAppliesFiltersWhenOPArrivesLate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:thread.created:i:600",
 		Kind:    gateway.KindThreadCreated,
 		Post: gateway.Post{
@@ -236,15 +236,15 @@ func TestGatewayConsumerAppliesFiltersWhenOPArrivesLate(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerSuppressesFirstRunBacklogNotifications(t *testing.T) {
+func TestGatewayNotifierSuppressesFirstRunBacklogNotifications(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 	consumer.bootstrapAt = now
 	consumer.cfg.Notifications.MinReplyPosts = 1
 
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID:    "ptchan:post.created:i:301",
 		Kind:       gateway.KindPostCreated,
 		ObservedAt: now.Add(-time.Minute),
@@ -271,15 +271,15 @@ func TestGatewayConsumerSuppressesFirstRunBacklogNotifications(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerBacklogDoesNotConsumeFutureNotification(t *testing.T) {
+func TestGatewayNotifierBacklogDoesNotConsumeFutureNotification(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 	consumer.bootstrapAt = now
 	consumer.cfg.Notifications.MinReplyPosts = 1
 
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID:    "ptchan:thread.created:i:700",
 		Kind:       gateway.KindThreadCreated,
 		ObservedAt: now.Add(-time.Minute),
@@ -293,7 +293,7 @@ func TestGatewayConsumerBacklogDoesNotConsumeFutureNotification(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID:    "ptchan:post.created:i:701",
 		Kind:       gateway.KindPostCreated,
 		ObservedAt: now.Add(-time.Minute),
@@ -312,7 +312,7 @@ func TestGatewayConsumerBacklogDoesNotConsumeFutureNotification(t *testing.T) {
 		t.Fatalf("backlog notification was sent")
 	}
 
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID:    "ptchan:post.created:i:702",
 		Kind:       gateway.KindPostCreated,
 		ObservedAt: now.Add(time.Second),
@@ -332,14 +332,14 @@ func TestGatewayConsumerBacklogDoesNotConsumeFutureNotification(t *testing.T) {
 	}
 }
 
-func TestGatewayConsumerStoresIgnoredThreads(t *testing.T) {
+func TestGatewayNotifierStoresIgnoredThreads(t *testing.T) {
 	store := testGatewayStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testGatewayConsumer(store, sender, now)
+	consumer := testGatewayNotifier(store, sender, now)
 	consumer.cfg.Notifications.Filter.KeywordDenylist = []string{"blocked"}
 
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:thread.created:i:200",
 		Kind:    gateway.KindThreadCreated,
 		Post: gateway.Post{
@@ -352,7 +352,7 @@ func TestGatewayConsumerStoresIgnoredThreads(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := consumer.consumeEvent(context.Background(), gateway.Event{
+	if err := consumer.consumeGatewayEvent(context.Background(), gateway.Event{
 		EventID: "ptchan:post.created:i:201",
 		Kind:    gateway.KindPostCreated,
 		Post: gateway.Post{
@@ -387,8 +387,8 @@ func testGatewayStore(t *testing.T) *state.Store {
 	return store
 }
 
-func testGatewayConsumer(store *state.Store, sender *fakeMessageSender, now time.Time) gatewayConsumer {
-	return gatewayConsumer{
+func testGatewayNotifier(store *state.Store, sender *fakeMessageSender, now time.Time) gatewayNotifier {
+	return gatewayNotifier{
 		cfg: GatewayConfig{
 			Webhook: GatewayWebhookConfig{
 				Addr: ":0",
@@ -396,13 +396,14 @@ func testGatewayConsumer(store *state.Store, sender *fakeMessageSender, now time
 			},
 			Notifications: GatewayNotificationConfig{MinReplyPosts: 2},
 		},
-		ptchan:   PtchanConfig{BaseURL: "https://ptchan.org", Secret: "secret"},
-		format:   telegram.NewFormatter(localization.New(localization.English)),
-		chatID:   123,
-		store:    store,
-		telegram: sender,
-		metrics:  newMetrics(),
-		logger:   discardLogger(),
-		nowFunc:  func() time.Time { return now },
+		ptchan:       PtchanConfig{BaseURL: "https://ptchan.org", Secret: "secret"},
+		format:       telegram.NewFormatter(localization.New(localization.English)),
+		chatID:       123,
+		store:        store,
+		telegram:     sender,
+		metrics:      newMetrics(),
+		logger:       discardLogger(),
+		nowFunc:      func() time.Time { return now },
+		bootstrapped: true,
 	}
 }

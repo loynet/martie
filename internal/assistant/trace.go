@@ -1,4 +1,4 @@
-package app
+package assistant
 
 import (
 	"fmt"
@@ -13,7 +13,13 @@ import (
 
 const assistantTracePattern = "martie-assistant-*.trace"
 
-type assistantTrace struct {
+type TraceConfig struct {
+	Enabled  bool
+	Dir      string
+	MaxFiles int
+}
+
+type Trace struct {
 	StartedAt        time.Time
 	MessageID        int64
 	ThreadID         int64
@@ -31,19 +37,19 @@ type assistantTrace struct {
 	RemovedExchanges int
 }
 
-type assistantTraceDumper struct {
+type TraceDumper struct {
 	dir      string
 	maxFiles int
 }
 
-func newAssistantTraceDumper(cfg AssistantTraceConfig) *assistantTraceDumper {
+func NewTraceDumper(cfg TraceConfig) *TraceDumper {
 	if !cfg.Enabled {
 		return nil
 	}
-	return &assistantTraceDumper{dir: cfg.Dir, maxFiles: cfg.MaxFiles}
+	return &TraceDumper{dir: cfg.Dir, maxFiles: cfg.MaxFiles}
 }
 
-func (d *assistantTraceDumper) dump(trace *assistantTrace) (string, error) {
+func (d *TraceDumper) Dump(trace *Trace) (string, error) {
 	if err := os.MkdirAll(d.dir, 0700); err != nil {
 		return "", fmt.Errorf("create trace directory: %w", err)
 	}
@@ -67,7 +73,7 @@ func (d *assistantTraceDumper) dump(trace *assistantTrace) (string, error) {
 	if err := file.Chmod(0600); err != nil {
 		return "", fmt.Errorf("set trace permissions: %w", err)
 	}
-	if _, err := file.WriteString(formatAssistantTrace(trace)); err != nil {
+	if _, err := file.WriteString(FormatTrace(trace)); err != nil {
 		return "", fmt.Errorf("write trace: %w", err)
 	}
 	if err := file.Close(); err != nil {
@@ -80,7 +86,7 @@ func (d *assistantTraceDumper) dump(trace *assistantTrace) (string, error) {
 	return path, nil
 }
 
-func (d *assistantTraceDumper) prune() error {
+func (d *TraceDumper) prune() error {
 	files, err := filepath.Glob(filepath.Join(d.dir, assistantTracePattern))
 	if err != nil {
 		return err
@@ -97,7 +103,7 @@ func (d *assistantTraceDumper) prune() error {
 	return nil
 }
 
-func formatAssistantTrace(trace *assistantTrace) string {
+func FormatTrace(trace *Trace) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "ASSISTANT TRACE\nstarted_at: %s\nmessage_id: %d\ntelegram_thread_id: %d\nuser: %s\noutcome: %s\n\n", trace.StartedAt.Format(time.RFC3339Nano), trace.MessageID, trace.ThreadID, trace.UserAlias, trace.Outcome)
 	b.WriteString("CONTEXT DECISIONS\n")

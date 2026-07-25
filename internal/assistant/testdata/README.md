@@ -1,12 +1,16 @@
 # ptchan Context Golden Fixtures
 
-These fixtures exercise Martie's prompt rendering for sanitized context returned
-by `ptchan-gateway`.
+These fixtures exercise Martie's assistant context rendering from sanitized
+thread data returned by `ptchan-gateway`. The renderer is shared infrastructure for any Martie
+surface that needs ptchan context, including Telegram link enrichment and the
+planned ptchan-native assistant.
 
-Each test case is a gateway response captured as JSON plus the prompt packet
-Martie is expected to render from it. The goal is to make context behavior easy
+Each test case is a gateway thread read captured as JSON plus the prompt packet
+Martie is expected to render from it. The goal is to make assistant context behavior easy
 to audit by humans and other agents: the input is the gateway contract, and the
-golden output is exactly what Martie sends as transient model context.
+golden output is exactly what Martie sends as transient model context. Keep these
+fixtures surface-neutral unless a test is deliberately covering a surface-specific
+prompt wrapper.
 
 ## Files
 
@@ -34,7 +38,7 @@ For real threads that are useful while developing but not ready to commit, put
 fixtures under:
 
 ```text
-internal/app/testdata/ptchan_context/local/
+internal/assistant/testdata/local/
 ```
 
 That directory is ignored by git and excluded from the default golden test run.
@@ -44,13 +48,13 @@ review.
 To include local fixtures in the golden test run:
 
 ```bash
-MARTIE_INCLUDE_LOCAL_GOLDEN=1 go test ./internal/app -run TestPtchanContextGoldenFiles
+MARTIE_INCLUDE_LOCAL_GOLDEN=1 go test ./internal/assistant -run TestPtchanContextGoldenFiles
 ```
 
 To regenerate local and committed goldens together:
 
 ```bash
-MARTIE_INCLUDE_LOCAL_GOLDEN=1 MARTIE_UPDATE_GOLDEN=1 go test ./internal/app -run TestPtchanContextGoldenFiles
+MARTIE_INCLUDE_LOCAL_GOLDEN=1 MARTIE_UPDATE_GOLDEN=1 go test ./internal/assistant -run TestPtchanContextGoldenFiles
 ```
 
 Promote a local fixture by moving its `.json`, `.meta`, and `.golden` files out
@@ -59,7 +63,9 @@ of `local/` after reviewing that it is sanitized, useful, and safe to commit.
 ## Gateway Agent Instructions
 
 When generating fixtures from `ptchan-gateway`, provide realistic sanitized
-context responses only. Use the integration API contract, not upstream ptchan JSON.
+thread read responses only. Use the integration API contract, not upstream ptchan JSON.
+The gateway is Martie's ptchan boundary; fixture data should reflect what an
+integration is allowed to see, not what upstream might contain internally.
 
 The JSON file should look like:
 
@@ -112,6 +118,8 @@ Good fixtures should cover one focused behavior at a time:
 - Attachment-only or empty-text posts.
 - Very long post bodies that must be bounded per post.
 - Cross-thread references, if the gateway emits them.
+- Gateway-origin markers for Martie's own produced posts when self-reply
+  avoidance is relevant to the scenario.
 
 ## Privacy Boundary
 
@@ -128,7 +136,7 @@ fingerprints if the gateway integration contract exposes them for that fixture.
 After adding or intentionally changing a fixture, regenerate goldens with:
 
 ```bash
-MARTIE_UPDATE_GOLDEN=1 go test ./internal/app -run TestPtchanContextGoldenFiles
+MARTIE_UPDATE_GOLDEN=1 go test ./internal/assistant -run TestPtchanContextGoldenFiles
 ```
 
 Then review the `.golden` diff by hand. The golden file should read like a

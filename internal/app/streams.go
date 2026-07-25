@@ -83,7 +83,7 @@ func (s streamPoller) handleStartedStream(ctx context.Context, channel miau.Chan
 		return fmt.Errorf("send miau telegram message for %s: %w", channel.Key, err)
 	}
 	s.logger.Info("stream live notification sent", "stream", channel.Key)
-	s.metrics.addNotifications(string(componentStreams), 1)
+	s.metrics.observeNotification(string(componentStreams), notificationSent)
 
 	stream.LiveNotified = true
 	if err := s.store.UpsertStreamState(ctx, stream); err != nil {

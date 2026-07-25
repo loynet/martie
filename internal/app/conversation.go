@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"martie/internal/assistant"
 	"martie/internal/deepseek"
 )
 
@@ -58,7 +59,7 @@ func (c *conversation) messages() []deepseek.Message {
 	return messages
 }
 
-func (c *conversation) userMessage(assistantName string, request assistantRequest) (string, bool) {
+func (c *conversation) userMessage(assistantName string, request telegramAssistantRequest) (string, bool) {
 	requestText := c.tokenizeUsernames(request.Text)
 	if request.ReplyText == "" {
 		return requestText, false
@@ -90,8 +91,8 @@ func (c *conversation) expire(now time.Time, ttl time.Duration) int {
 func (c *conversation) remember(userAlias, userText, assistantText string, now time.Time, exchangeLimit int) int {
 	c.exchanges = append(c.exchanges, exchange{
 		userAlias:     userAlias,
-		userText:      truncateRunes(userText, historyMessageRunes),
-		assistantText: truncateRunes(assistantText, historyMessageRunes),
+		userText:      assistant.TruncateRunes(userText, historyMessageRunes),
+		assistantText: assistant.TruncateRunes(assistantText, historyMessageRunes),
 		createdAt:     now,
 	})
 	removed := 0
@@ -116,7 +117,7 @@ func formatTelegramHistoryEntry(alias, message string) string {
 	b.WriteString("BEGIN TELEGRAM HISTORY ENTRY\n")
 	fmt.Fprintf(&b, "Speaker: %s\n", alias)
 	b.WriteString("Message:\n")
-	writeFencedBlock(&b, "telegram-message", message)
+	assistant.WriteFencedBlock(&b, "telegram-message", message)
 	b.WriteString("\n")
 	b.WriteString("END TELEGRAM HISTORY ENTRY")
 	return b.String()
@@ -144,7 +145,7 @@ func formatTelegramCurrentRequest(alias, message string, historyEntries int, has
 	b.WriteString("CURRENT TELEGRAM REQUEST\n\n")
 	fmt.Fprintf(&b, "Speaker: %s\n", alias)
 	b.WriteString("Message:\n")
-	writeFencedBlock(&b, "telegram-message", message)
+	assistant.WriteFencedBlock(&b, "telegram-message", message)
 	b.WriteString("\n\n")
 	b.WriteString("RESPONSE RULES\n\n")
 	b.WriteString("- Reply to the current Telegram request.\n")
@@ -154,37 +155,6 @@ func formatTelegramCurrentRequest(alias, message string, historyEntries int, has
 	b.WriteString("- Keep the reply suitable for Telegram.\n\n")
 	b.WriteString("END TELEGRAM CONTEXT")
 	return b.String()
-}
-
-func writeFencedBlock(b *strings.Builder, info, body string) {
-	fence := strings.Repeat("`", longestBacktickRun(body)+1)
-	if len(fence) < 3 {
-		fence = "```"
-	}
-	b.WriteString(fence)
-	if info != "" {
-		b.WriteString(info)
-	}
-	b.WriteByte('\n')
-	b.WriteString(body)
-	b.WriteByte('\n')
-	b.WriteString(fence)
-}
-
-func longestBacktickRun(text string) int {
-	longest := 0
-	current := 0
-	for _, r := range text {
-		if r == '`' {
-			current++
-			if current > longest {
-				longest = current
-			}
-			continue
-		}
-		current = 0
-	}
-	return longest
 }
 
 func (c *conversation) participantAlias(userID int64, username, firstName string) string {

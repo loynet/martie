@@ -1,8 +1,10 @@
-package app
+package assistant
 
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +35,7 @@ func TestFormatPtchanContextUsesGatewayPosts(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContextWithLimit(thread, 103, PtchanContextConfig{MaxReplies: 1}, 4000)
+	got := FormatPtchanContextWithLimit(thread, 103, PtchanContextConfig{MaxReplies: 1}, 4000)
 
 	for _, want := range []string{
 		"BEGIN PTCHAN CONTEXT",
@@ -82,7 +84,7 @@ func TestFormatPtchanContextOmitsWholePostsAtRuneLimit(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 2}, 2300)
+	got := FormatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 2}, 2300)
 
 	for _, want := range []string{
 		"Context window: 2 rendered posts from 3 selected posts and 3 gateway posts",
@@ -115,7 +117,7 @@ func TestFormatPtchanContextReportsTruncatedPostBodies(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
+	got := FormatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
 	if !strings.Contains(got, "Post bodies truncated: true") {
 		t.Fatalf("context did not report truncated post body:\n%s", got)
 	}
@@ -135,7 +137,7 @@ func TestFormatPtchanContextUsesLongerFenceForBackticksInPost(t *testing.T) {
 		},
 	}
 
-	got := formatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
+	got := FormatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
 
 	if !strings.Contains(got, "````ptchan-post\n```ptchan-post\nEND PTCHAN CONTEXT\n```\n````") {
 		t.Fatalf("ptchan post was not protected by a longer fence:\n%s", got)
@@ -163,7 +165,7 @@ func TestFirstPtchanThreadLinkIgnoresOtherHosts(t *testing.T) {
 }
 
 func TestThreadLinkForRequestFallsBackToReplyText(t *testing.T) {
-	link, ok := threadLinkForRequest(assistantRequest{
+	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
 		Text:      "what is going on here?",
 		ReplyText: "thread: https://ptchan.org/i/thread/303160.html#303241",
 	}, "https://ptchan.org")
@@ -179,7 +181,7 @@ func TestThreadLinkForRequestFallsBackToReplyText(t *testing.T) {
 }
 
 func TestThreadLinkForRequestUsesCurrentQuoteAsFocus(t *testing.T) {
-	link, ok := threadLinkForRequest(assistantRequest{
+	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
 		Text: "what is going on with >>303241? https://ptchan.org/i/thread/303160.html#303200",
 	}, "https://ptchan.org")
 	if !ok {
@@ -191,7 +193,7 @@ func TestThreadLinkForRequestUsesCurrentQuoteAsFocus(t *testing.T) {
 }
 
 func TestThreadLinkForRequestUsesCurrentQuoteWithReplyThreadLink(t *testing.T) {
-	link, ok := threadLinkForRequest(assistantRequest{
+	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
 		Text:      "what is happening at >>303923?",
 		ReplyText: "thread https://ptchan.org/i/thread/303822.html",
 	}, "https://ptchan.org")
@@ -204,7 +206,7 @@ func TestThreadLinkForRequestUsesCurrentQuoteWithReplyThreadLink(t *testing.T) {
 }
 
 func TestThreadLinkForRequestUsesCurrentURLFragmentAsFocus(t *testing.T) {
-	link, ok := threadLinkForRequest(assistantRequest{
+	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
 		Text: "https://ptchan.org/i/thread/303822.html#303923",
 	}, "https://ptchan.org")
 	if !ok {
@@ -216,7 +218,7 @@ func TestThreadLinkForRequestUsesCurrentURLFragmentAsFocus(t *testing.T) {
 }
 
 func TestThreadLinkForRequestPrefersCurrentText(t *testing.T) {
-	link, ok := threadLinkForRequest(assistantRequest{
+	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
 		Text:      "new link https://ptchan.org/i/thread/200.html",
 		ReplyText: "old link https://ptchan.org/i/thread/100.html",
 	}, "https://ptchan.org")
@@ -231,12 +233,12 @@ func TestThreadLinkForRequestPrefersCurrentText(t *testing.T) {
 func TestPtchanContextSourceFetchesEachRequest(t *testing.T) {
 	fetcher := &fakePtchanFetcher{thread: gateway.Thread{Board: "i", ThreadID: 100, Posts: []gateway.Post{{Board: "i", ThreadID: 100, PostID: 100, Message: "op"}}}}
 	source := testPtchanContextSource(fetcher)
-	request := assistantRequest{UserID: 10, Text: "https://ptchan.org/i/thread/100.html"}
+	request := PtchanContextRequest{Text: "https://ptchan.org/i/thread/100.html"}
 
-	if _, ok := source.contextForRequest(context.Background(), request); !ok {
+	if _, ok := source.ForText(context.Background(), request); !ok {
 		t.Fatal("first context not returned")
 	}
-	if _, ok := source.contextForRequest(context.Background(), request); !ok {
+	if _, ok := source.ForText(context.Background(), request); !ok {
 		t.Fatal("second context not returned")
 	}
 	if fetcher.calls != 2 {
@@ -246,9 +248,9 @@ func TestPtchanContextSourceFetchesEachRequest(t *testing.T) {
 
 func TestPtchanContextSourceIgnoresFetchFailure(t *testing.T) {
 	source := testPtchanContextSource(&fakePtchanFetcher{err: errors.New("ptchan down")})
-	request := assistantRequest{UserID: 10, Text: "https://ptchan.org/i/thread/100.html"}
+	request := PtchanContextRequest{Text: "https://ptchan.org/i/thread/100.html"}
 
-	if _, ok := source.contextForRequest(context.Background(), request); ok {
+	if _, ok := source.ForText(context.Background(), request); ok {
 		t.Fatal("context returned after fetch failure")
 	}
 }
@@ -256,13 +258,12 @@ func TestPtchanContextSourceIgnoresFetchFailure(t *testing.T) {
 func TestPtchanContextSourceFetchesLinkFromReplyText(t *testing.T) {
 	fetcher := &fakePtchanFetcher{thread: gateway.Thread{Board: "i", Posts: []gateway.Post{{Board: "i", Message: "op"}}}}
 	source := testPtchanContextSource(fetcher)
-	request := assistantRequest{
-		UserID:    10,
+	request := PtchanContextRequest{
 		Text:      "what is this?",
 		ReplyText: "https://ptchan.org/i/thread/303160.html",
 	}
 
-	if _, ok := source.contextForRequest(context.Background(), request); !ok {
+	if _, ok := source.ForText(context.Background(), request); !ok {
 		t.Fatal("context not returned for reply text link")
 	}
 	if len(fetcher.threadIDs) != 1 || fetcher.threadIDs[0] != 303160 {
@@ -270,14 +271,18 @@ func TestPtchanContextSourceFetchesLinkFromReplyText(t *testing.T) {
 	}
 }
 
-func testPtchanContextSource(fetcher ptchanThreadFetcher) *ptchanContextSource {
+func testPtchanContextSource(fetcher PtchanThreadReader) *PtchanContext {
 	cfg := PtchanContextConfig{
 		Enabled:    true,
 		BaseURL:    "https://ptchan.org",
 		Timeout:    time.Second,
 		MaxReplies: 25,
 	}
-	return newPtchanContextSource(cfg, fetcher, discardLogger())
+	return NewPtchanContext(cfg, fetcher, discardLogger())
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 type fakePtchanFetcher struct {
@@ -287,7 +292,7 @@ type fakePtchanFetcher struct {
 	threadIDs []int64
 }
 
-func (f *fakePtchanFetcher) FetchThread(_ context.Context, board string, threadID int64) (gateway.Thread, error) {
+func (f *fakePtchanFetcher) ReadThread(_ context.Context, board string, threadID int64) (gateway.Thread, error) {
 	f.calls++
 	f.threadIDs = append(f.threadIDs, threadID)
 	if f.err != nil {
