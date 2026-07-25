@@ -44,9 +44,15 @@ type renderedPtchanPost struct {
 }
 
 func newPtchanContextSource(cfg PtchanContextConfig, client ptchanThreadFetcher, logger *slog.Logger) *ptchanContextSource {
-	if !cfg.Enabled || client == nil {
+	if !cfg.Enabled {
+		logger.Info("ptchan context disabled")
 		return nil
 	}
+	if client == nil {
+		logger.Warn("ptchan context enabled without gateway client")
+		return nil
+	}
+	logger.Info("ptchan context enabled", "base_url", cfg.BaseURL, "gateway_url", cfg.GatewayURL, "timeout", cfg.Timeout)
 	return &ptchanContextSource{
 		cfg:    cfg,
 		client: client,
@@ -63,6 +69,7 @@ func (s *ptchanContextSource) contextForRequest(ctx context.Context, request ass
 		return "", false
 	}
 
+	s.logger.Info("ptchan context fetching", "board", link.Board, "thread_id", link.ThreadID, "post_id", link.PostID)
 	fetchCtx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 	thread, err := s.client.FetchThread(fetchCtx, link.Board, link.ThreadID)
@@ -71,6 +78,7 @@ func (s *ptchanContextSource) contextForRequest(ctx context.Context, request ass
 		return "", false
 	}
 
+	s.logger.Info("ptchan context fetched", "board", thread.Board, "thread_id", thread.ThreadID, "posts", len(thread.Posts), "truncated", thread.Truncated)
 	return formatPtchanContext(thread, link.PostID, s.cfg), true
 }
 

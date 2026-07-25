@@ -16,6 +16,7 @@ import (
 )
 
 const maxContextResponseBytes = 4 << 20
+const maxContextErrorBytes = 512
 
 type ContextClient struct {
 	baseURL     string
@@ -55,6 +56,11 @@ func (c *ContextClient) FetchThread(ctx context.Context, board string, threadID 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(&io.LimitedReader{R: resp.Body, N: maxContextErrorBytes})
+		message := strings.TrimSpace(string(body))
+		if message != "" {
+			return Thread{}, fmt.Errorf("gateway context status: %s: %s", resp.Status, message)
+		}
 		return Thread{}, fmt.Errorf("gateway context status: %s", resp.Status)
 	}
 
@@ -70,6 +76,19 @@ func (c *ContextClient) FetchThread(ctx context.Context, board string, threadID 
 		return Thread{}, fmt.Errorf("gateway context response exceeds %d bytes", maxContextResponseBytes)
 	}
 	return thread, nil
+}
+
+func (c *ContextClient) CheckReachable(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
+	if err != nil {
+		return fmt.Errorf("create gateway health request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("send gateway health request: %w", err)
+	}
+	defer resp.Body.Close()
+	return nil
 }
 
 type Thread struct {

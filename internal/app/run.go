@@ -80,13 +80,19 @@ func Run(
 		assistant.traces = newAssistantTraceDumper(cfg.Assistant.Trace)
 		var contextClient ptchanThreadFetcher
 		if cfg.Assistant.PtchanContext.Enabled {
-			contextClient = gateway.NewContextClient(
+			client := gateway.NewContextClient(
 				cfg.Assistant.PtchanContext.GatewayURL,
 				cfg.Ptchan.IntegrationName,
 				cfg.Ptchan.Secret,
 				cfg.Assistant.PtchanContext.Timeout,
 				ptchanGatewayContextLimit,
 			)
+			checkCtx, cancel := context.WithTimeout(ctx, cfg.Assistant.PtchanContext.Timeout)
+			if err := client.CheckReachable(checkCtx); err != nil {
+				logger.Warn("ptchan gateway context unreachable", "component", componentAssistant, "gateway_url", cfg.Assistant.PtchanContext.GatewayURL, "error", err)
+			}
+			cancel()
+			contextClient = client
 		}
 		assistant.ptchan = newPtchanContextSource(cfg.Assistant.PtchanContext, contextClient, logger.With("component", componentAssistant, "context", "ptchan"))
 		components = append(components, component{name: componentAssistant, run: assistant.run})

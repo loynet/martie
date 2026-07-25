@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -54,6 +55,63 @@ func TestContextClientFetchThreadUsesSignedGatewayEndpoint(t *testing.T) {
 	}
 	if thread.Board != "i" || thread.ThreadID != 100 || !thread.Truncated || len(thread.Posts) != 2 || thread.Posts[0].Message != "op" || thread.Posts[1].Origin == nil || thread.Posts[1].Origin.Name != "martie" || len(thread.Posts[1].References) != 1 {
 		t.Fatalf("thread = %+v", thread)
+	}
+}
+
+func TestContextClientFetchThreadIncludesStatusBody(t *testing.T) {
+	client := &ContextClient{
+		baseURL:     "http://gateway.test",
+		integration: "martie",
+		secret:      "secret",
+		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Status:     "403 Forbidden",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("board blocked by policy")),
+			}, nil
+		})},
+	}
+
+	_, err := client.FetchThread(context.Background(), "i", 100)
+	if err == nil || !strings.Contains(err.Error(), "403 Forbidden: board blocked by policy") {
+		t.Fatalf("FetchThread() error = %v, want status body", err)
+	}
+}
+
+func TestContextClientCheckReachableUsesHealthEndpoint(t *testing.T) {
+	var gotPath string
+	client := &ContextClient{
+		baseURL: "http://gateway.test",
+		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("not found")),
+			}, nil
+		})},
+	}
+
+	if err := client.CheckReachable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/healthz" {
+		t.Fatalf("health path = %q, want /healthz", gotPath)
+	}
+}
+
+func TestContextClientCheckReachableReportsRequestFailure(t *testing.T) {
+	client := &ContextClient{
+		baseURL: "http://gateway.test",
+		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("lookup failed")
+		})},
+	}
+
+	if err := client.CheckReachable(context.Background()); err == nil || !strings.Contains(err.Error(), "send gateway health request") {
+		t.Fatalf("CheckReachable() error = %v, want send error", err)
 	}
 }
 
