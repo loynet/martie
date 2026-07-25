@@ -9,6 +9,7 @@ import (
 type ThreadLink struct {
 	Board    string
 	ThreadID int64
+	PostID   int64
 }
 
 func ParseThreadLink(raw, baseURL string) (ThreadLink, bool) {
@@ -30,5 +31,9 @@ func ParseThreadLink(raw, baseURL string) (ThreadLink, bool) {
 	if err != nil || threadID <= 0 || parts[0] == "" {
 		return ThreadLink{}, false
 	}
-	return ThreadLink{Board: parts[0], ThreadID: threadID}, true
+	var postID int64
+	if parsed.Fragment != "" {
+		postID, _ = strconv.ParseInt(strings.TrimPrefix(parsed.Fragment, "p"), 10, 64)
+	}
+	return ThreadLink{Board: parts[0], ThreadID: threadID, PostID: postID}, true
 }

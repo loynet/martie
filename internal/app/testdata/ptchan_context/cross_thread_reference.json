@@ -1,0 +1,64 @@
+{
+  "board": "i",
+  "thread_id": 4700,
+  "posts": [
+    {
+      "board": "i",
+      "thread_id": 4700,
+      "post_id": 4700,
+      "url": "https://ptchan.org/i/thread/4700.html#4700",
+      "date": "2026-07-23T15:00:00Z",
+      "subject": "cross-thread reference example",
+      "message": "Someone linked a different thread as background. The agent should notice the reference but not invent the missing post.",
+      "name": "Anonymous",
+      "attachment_count": 0
+    },
+    {
+      "board": "i",
+      "thread_id": 4700,
+      "post_id": 4701,
+      "url": "https://ptchan.org/i/thread/4700.html#4701",
+      "date": "2026-07-23T15:05:00Z",
+      "message": "This is related to >>8123 from another thread, but the current context does not include that post body.",
+      "name": "Anonymous",
+      "attachment_count": 0,
+      "references": [
+        {
+          "board": "i",
+          "thread_id": 8000,
+          "post_id": 8123
+        }
+      ],
+      "referenced_by": [
+        {
+          "board": "i",
+          "thread_id": 4700,
+          "post_id": 4702
+        }
+      ]
+    },
+    {
+      "board": "i",
+      "thread_id": 4700,
+      "post_id": 4702,
+      "url": "https://ptchan.org/i/thread/4700.html#4702",
+      "date": "2026-07-23T15:08:00Z",
+      "message": "@deepseek summarize this, but do not assume you can read >>8123.",
+      "name": "Anonymous",
+      "attachment_count": 0,
+      "references": [
+        {
+          "board": "i",
+          "thread_id": 4700,
+          "post_id": 4701
+        },
+        {
+          "board": "i",
+          "thread_id": 8000,
+          "post_id": 8123
+        }
+      ]
+    }
+  ],
+  "truncated": false
+}

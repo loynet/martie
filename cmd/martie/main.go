@@ -11,7 +11,6 @@ import (
 
 	"martie/internal/app"
 	"martie/internal/miau"
-	"martie/internal/ptchan"
 	"martie/internal/state"
 	"martie/internal/telegram"
 )
@@ -42,19 +41,13 @@ func main() {
 	}
 	defer store.Close()
 
-	ptchanClient := ptchan.New(cfg.Catalog.BaseURL)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	switch command {
 	case "run":
-		if err := app.Run(ctx, cfg, store, miau.New(), ptchanClient, telegram.New(cfg.Telegram.BotToken, logger), logger); err != nil {
+		if err := app.Run(ctx, cfg, store, miau.New(), telegram.New(cfg.Telegram.BotToken, logger), logger); err != nil {
 			logger.Error("run service", "error", err)
-			os.Exit(1)
-		}
-	case "snapshot":
-		if err := app.Snapshot(ctx, cfg, store, ptchanClient, logger); err != nil {
-			logger.Error("snapshot store", "error", err)
 			os.Exit(1)
 		}
 	default:
@@ -76,12 +69,12 @@ func parseCommand(args []string) (string, error) {
 	}
 
 	switch args[0] {
-	case "run", "snapshot":
+	case "run":
 		if len(args) > 1 {
-			return "", fmt.Errorf("usage: martie [run|snapshot]")
+			return "", fmt.Errorf("usage: martie [run]")
 		}
 		return args[0], nil
 	default:
-		return "", fmt.Errorf("usage: martie [run|snapshot]")
+		return "", fmt.Errorf("usage: martie [run]")
 	}
 }

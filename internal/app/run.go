@@ -10,60 +10,25 @@ import (
 	"time"
 
 	"martie/internal/deepseek"
+	"martie/internal/gateway"
 	"martie/internal/localization"
 	"martie/internal/miau"
-	"martie/internal/ptchan"
 	"martie/internal/state"
 	"martie/internal/telegram"
 )
-
-type catalogPoller struct {
-	cfg      CatalogConfig
-	format   telegram.Formatter
-	chatID   int64
-	store    *state.Store
-	client   *ptchan.Client
-	telegram *telegram.Client
-	metrics  *metrics
-	logger   *slog.Logger
-}
-
-type streamPoller struct {
-	channels         []miau.Channel
-	format           telegram.Formatter
-	endMissThreshold int
-	chatID           int64
-	store            streamStore
-	client           streamClient
-	telegram         messageSender
-	metrics          *metrics
-	logger           *slog.Logger
-}
-
-type streamClient interface {
-	IsLive(context.Context, miau.Channel) (bool, error)
-}
-
-type streamStore interface {
-	GetStreamState(context.Context, string) (state.StreamState, bool, error)
-	UpsertStreamState(context.Context, state.StreamState) error
-}
-
-type messageSender interface {
-	Send(context.Context, telegram.SendRequest) error
-}
 
 type component struct {
 	name ComponentName
 	run  func(context.Context) error
 }
 
+const ptchanGatewayContextLimit = 50
+
 func Run(
 	ctx context.Context,
 	cfg Config,
 	store *state.Store,
 	streamClient *miau.Client,
-	catalogClient *ptchan.Client,
 	telegramClient *telegram.Client,
 	logger *slog.Logger,
 ) error {
@@ -79,19 +44,6 @@ func Run(
 	formatter := telegram.NewFormatter(text)
 
 	var components []component
-	if cfg.runs(componentCatalog) {
-		catalog := catalogPoller{
-			cfg:      cfg.Catalog,
-			format:   formatter,
-			chatID:   cfg.Telegram.NotificationChatID,
-			store:    store,
-			client:   catalogClient,
-			telegram: telegramClient,
-			metrics:  metrics,
-			logger:   logger.With("component", componentCatalog),
-		}
-		components = append(components, pollingComponent(componentCatalog, cfg.Catalog.PollInterval, catalog.poll, metrics, logger))
-	}
 	if cfg.runs(componentStreams) {
 		streams := streamPoller{
 			channels:         cfg.Streams.Channels,
@@ -106,13 +58,32 @@ func Run(
 		}
 		components = append(components, pollingComponent(componentStreams, cfg.Streams.PollInterval, streams.poll, metrics, logger))
 	}
+	if cfg.runs(componentGateway) {
+		gateway := gatewayConsumer{
+			cfg:      cfg.Gateway,
+			format:   formatter,
+			chatID:   cfg.Telegram.NotificationChatID,
+			store:    store,
+			telegram: telegramClient,
+			metrics:  metrics,
+			logger:   logger.With("component", componentGateway),
+			nowFunc:  time.Now,
+		}
+		components = append(components, component{name: componentGateway, run: gateway.run})
+	}
 	if cfg.runs(componentAssistant) {
 		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens, cfg.DeepSeek.Timeout)
 		assistant := newAssistant(cfg.Assistant, text, store, telegramClient, completer, metrics, logger.With("component", componentAssistant))
 		assistant.traces = newAssistantTraceDumper(cfg.Assistant.Trace)
-		contextClient := catalogClient
+		var contextClient ptchanThreadFetcher
 		if cfg.Assistant.PtchanContext.Enabled {
-			contextClient = ptchan.New(cfg.Assistant.PtchanContext.BaseURL)
+			contextClient = gateway.NewContextClient(
+				cfg.Assistant.PtchanContext.GatewayURL,
+				cfg.Gateway.IntegrationName,
+				cfg.Gateway.Secret,
+				cfg.Assistant.PtchanContext.Timeout,
+				ptchanGatewayContextLimit,
+			)
 		}
 		assistant.ptchan = newPtchanContextSource(cfg.Assistant.PtchanContext, contextClient, logger.With("component", componentAssistant, "context", "ptchan"))
 		components = append(components, component{name: componentAssistant, run: assistant.run})

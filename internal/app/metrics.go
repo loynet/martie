@@ -8,7 +8,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"martie/internal/deepseek"
-	"martie/internal/ptchan"
 )
 
 type metrics struct {
@@ -26,15 +25,6 @@ type metrics struct {
 	aiRequests               *prometheus.CounterVec
 	aiDuration               prometheus.Histogram
 	aiTokens                 *prometheus.CounterVec
-
-	catalogThreads          *prometheus.GaugeVec
-	catalogTrackedThreads   *prometheus.GaugeVec
-	catalogReplyPosts       *prometheus.GaugeVec
-	catalogReplyFiles       *prometheus.GaugeVec
-	catalogAverageThreadAge *prometheus.GaugeVec
-	catalogAverageBumpAge   *prometheus.GaugeVec
-	catalogOldestThreadAge  *prometheus.GaugeVec
-	catalogOldestBumpAge    *prometheus.GaugeVec
 }
 
 const (
@@ -76,7 +66,7 @@ func newMetrics() *metrics {
 		}, []string{"result"}),
 		assistantContextRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "martie_assistant_context_requests_total",
-			Help: "Assistant requests that include recent history or replied-to message context.",
+			Help: "Assistant requests that include recent history, replied-to message, or gateway ptchan context.",
 		}, []string{"type"}),
 		activeConversations: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "martie_assistant_active_conversations",
@@ -95,14 +85,6 @@ func newMetrics() *metrics {
 			Name: "martie_ai_tokens_total",
 			Help: "AI tokens consumed by mutually exclusive input cache status or output.",
 		}, []string{"type"}),
-		catalogThreads:          newBoardGauge("martie_ptchan_catalog_threads", "Threads in the most recent catalog."),
-		catalogTrackedThreads:   newBoardGauge("martie_ptchan_catalog_tracked_threads", "Threads in the most recent catalog that match martie filters."),
-		catalogReplyPosts:       newBoardGauge("martie_ptchan_catalog_reply_posts", "Reply posts in the most recent catalog."),
-		catalogReplyFiles:       newBoardGauge("martie_ptchan_catalog_reply_files", "Reply files in the most recent catalog."),
-		catalogAverageThreadAge: newBoardGauge("martie_ptchan_catalog_average_thread_age_seconds", "Average age of threads in the most recent catalog."),
-		catalogAverageBumpAge:   newBoardGauge("martie_ptchan_catalog_average_bump_age_seconds", "Average time since the last bump in the most recent catalog."),
-		catalogOldestThreadAge:  newBoardGauge("martie_ptchan_catalog_oldest_thread_age_seconds", "Age of the oldest thread in the most recent catalog."),
-		catalogOldestBumpAge:    newBoardGauge("martie_ptchan_catalog_oldest_bump_age_seconds", "Time since the oldest bump in the most recent catalog."),
 	}
 
 	m.registry.MustRegister(
@@ -122,24 +104,9 @@ func newMetrics() *metrics {
 		m.aiRequests,
 		m.aiDuration,
 		m.aiTokens,
-		m.catalogThreads,
-		m.catalogTrackedThreads,
-		m.catalogReplyPosts,
-		m.catalogReplyFiles,
-		m.catalogAverageThreadAge,
-		m.catalogAverageBumpAge,
-		m.catalogOldestThreadAge,
-		m.catalogOldestBumpAge,
 	)
 
 	return m
-}
-
-func newBoardGauge(name, help string) *prometheus.GaugeVec {
-	return prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: name,
-		Help: help,
-	}, []string{"board"})
 }
 
 func (m *metrics) handler() http.Handler {
@@ -194,63 +161,4 @@ func (m *metrics) observeAICompletion(duration time.Duration, completion deepsee
 	m.aiTokens.WithLabelValues("input_cache_hit").Add(float64(completion.Usage.PromptCacheHitTokens))
 	m.aiTokens.WithLabelValues("input_cache_miss").Add(float64(completion.Usage.PromptCacheMissTokens))
 	m.aiTokens.WithLabelValues("output").Add(float64(completion.Usage.CompletionTokens))
-}
-
-func (m *metrics) observeCatalog(catalog ptchan.Catalog, cfg CatalogConfig, now time.Time) {
-	threads := make(map[string]int)
-	trackedThreads := make(map[string]int)
-	replyPosts := make(map[string]int)
-	replyFiles := make(map[string]int)
-	threadAges := make(map[string]float64)
-	bumpAges := make(map[string]float64)
-	oldestThread := make(map[string]float64)
-	oldestBump := make(map[string]float64)
-	threadAgeCounts := make(map[string]int)
-	bumpAgeCounts := make(map[string]int)
-
-	for _, thread := range catalog.Threads {
-		threads[thread.Board]++
-		replyPosts[thread.Board] += thread.ReplyPosts
-		replyFiles[thread.Board] += thread.ReplyFiles
-
-		if !thread.Date.IsZero() {
-			age := now.Sub(thread.Date).Seconds()
-			threadAges[thread.Board] += age
-			threadAgeCounts[thread.Board]++
-			oldestThread[thread.Board] = max(oldestThread[thread.Board], age)
-		}
-		if !thread.Bumped.IsZero() {
-			age := now.Sub(thread.Bumped).Seconds()
-			bumpAges[thread.Board] += age
-			bumpAgeCounts[thread.Board]++
-			oldestBump[thread.Board] = max(oldestBump[thread.Board], age)
-		}
-
-		if cfg.Filter.Allows(thread, now) {
-			trackedThreads[thread.Board]++
-		}
-	}
-
-	for board, count := range threadAgeCounts {
-		threadAges[board] /= float64(count)
-	}
-	for board, count := range bumpAgeCounts {
-		bumpAges[board] /= float64(count)
-	}
-
-	setBoardGauges(m.catalogThreads, threads)
-	setBoardGauges(m.catalogTrackedThreads, trackedThreads)
-	setBoardGauges(m.catalogReplyPosts, replyPosts)
-	setBoardGauges(m.catalogReplyFiles, replyFiles)
-	setBoardGauges(m.catalogAverageThreadAge, threadAges)
-	setBoardGauges(m.catalogAverageBumpAge, bumpAges)
-	setBoardGauges(m.catalogOldestThreadAge, oldestThread)
-	setBoardGauges(m.catalogOldestBumpAge, oldestBump)
-}
-
-func setBoardGauges[V int | float64](gauges *prometheus.GaugeVec, values map[string]V) {
-	gauges.Reset()
-	for board, value := range values {
-		gauges.WithLabelValues(board).Set(float64(value))
-	}
 }

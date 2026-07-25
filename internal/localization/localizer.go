@@ -10,8 +10,6 @@ const (
 	AssistantTooLong           Key = "assistant.too_long"
 	AssistantRateLimited       Key = "assistant.rate_limited"
 	AssistantFiltered          Key = "assistant.filtered"
-	AssistantUserSays          Key = "assistant.user_says"
-	AssistantReplyContext      Key = "assistant.reply_context"
 	TelegramReplyOne           Key = "telegram.reply_one"
 	TelegramReplyMany          Key = "telegram.reply_many"
 	TelegramFileOne            Key = "telegram.file_one"
@@ -26,8 +24,6 @@ var portuguesePortugal = map[Key]string{
 	AssistantTooLong:           "Essa mensagem é demasiado longa. Um pouco de contenção não te mata.",
 	AssistantRateLimited:       "Calma. Só consigo aguentar uma certa quantidade de ti de cada vez.",
 	AssistantFiltered:          "Não posso ajudar com esse pedido. Sim, até eu tenho limites.",
-	AssistantUserSays:          "Utilizador do Telegram %s diz:\n%s",
-	AssistantReplyContext:      "Mensagem de %s à qual estás a responder:\n%s\n\nPedido atual:\n%s",
 	TelegramReplyOne:           "resposta",
 	TelegramReplyMany:          "respostas",
 	TelegramFileOne:            "ficheiro",

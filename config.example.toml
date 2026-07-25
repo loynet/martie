@@ -4,7 +4,7 @@ locale = "en"
 name = "Martie"
 
 [telegram]
-# Channel or chat that receives catalog and stream notifications.
+# Channel or chat that receives gateway and stream notifications.
 notification_chat_id = 123456789
 # Linked discussion group where the assistant accepts requests.
 discussion_chat_id = -1001234567890
@@ -18,17 +18,13 @@ allow_all_users = false
 max_input_runes = 4096
 # Debug only: logs tokenized assistant history and message content.
 log_memory = false
-# Provider-facing personality and behavior. Replace this example in your untracked
-# config with the character, voice, boundaries, and response style you want.
+# Provider-facing personality and behavior. Replace this example in your
+# untracked config with the character, voice, boundaries, and response style you
+# want. Do not put Telegram or ptchan transcript-reading rules here; Martie
+# generates those context packets itself.
 # {{name}} is replaced with the top-level name in both prompts.
 system_prompt = """
 You are {{name}}, a helpful conversational assistant.
-"""
-# Conversation-specific instructions appended to system_prompt. Use this for rules
-# about group context, participant handles, memory, and reply formatting.
-# Message and reply-context wrappers supplied to the model remain localized.
-chat_prompt = """
-Use recent messages as conversation context.
 """
 
 [assistant.memory]
@@ -47,14 +43,14 @@ global_limit = 100
 global_burst = 12
 
 [assistant.ptchan_context]
-# When enabled, messages containing ptchan thread links fetch a live compact
-# thread snapshot and pass it to the assistant as bounded external context.
+# When enabled, messages containing ptchan thread links fetch sanitized
+# ptchan-gateway context and render a bounded prompt packet for the assistant.
 enabled = false
 base_url = "https://ptchan.org"
+gateway_url = "http://ptchan-gateway:8080"
 timeout = "5s"
-cache_ttl = "60s"
-max_replies = 10
-max_context_runes = 8000
+# Render the OP when available plus this many focused or recent non-OP posts.
+max_replies = 25
 
 [assistant.trace]
 # Write one human-readable trace for each assistant interaction sent to the model.
@@ -70,24 +66,28 @@ max_tokens = 500
 # Deadline for one DeepSeek completion request.
 timeout = "60s"
 
-[catalog]
-# ptchan origin; the client fetches /catalog.json from it.
+[gateway]
+# Integration name configured in ptchan-gateway. The matching secret is read from
+# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses PTCHAN_INTEGRATION_MARTIE_SECRET.
+integration_name = "martie"
+# Address and path where Martie accepts signed gateway webhooks.
+addr = ":8081"
+path = "/internal/ptchan/events"
+# Public ptchan origin used when formatting Telegram thread links.
 base_url = "https://ptchan.org"
-# How often to fetch the catalog.
-poll_interval = "5m"
-# Delay notification until a thread has at least this many reply posts.
+# Notify after this many observed reply posts.
 min_reply_posts = 10
-# Boards and case-insensitive text fragments excluded from tracking.
+# Boards and case-insensitive OP text fragments excluded from tracking.
 board_denylist = []
 keyword_denylist = []
 # Zero disables the age limit.
 max_thread_age = "0s"
-# Forget stored threads after this duration; zero disables pruning.
+# Forget old tracked threads and sent notification/event receipts after this duration.
 prune_after = "24h"
 
 [runtime]
-# Components run by this process: "catalog", "streams", and/or "assistant".
-components = ["catalog", "streams", "assistant"]
+# Components run by this process: "gateway", "streams", and/or "assistant".
+components = ["gateway", "streams", "assistant"]
 # Empty disables the Prometheus endpoint.
 metrics_addr = ""
 

@@ -7,7 +7,7 @@ func TestParseThreadLink(t *testing.T) {
 	if !ok {
 		t.Fatal("link was not parsed")
 	}
-	if link.Board != "i" || link.ThreadID != 303160 {
+	if link.Board != "i" || link.ThreadID != 303160 || link.PostID != 303241 {
 		t.Fatalf("link = %+v", link)
 	}
 }

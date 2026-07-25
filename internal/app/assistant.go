@@ -52,6 +52,7 @@ type assistant struct {
 	history   map[conversationKey]*conversation
 	ptchan    *ptchanContextSource
 	traces    *assistantTraceDumper
+	aliasSeed string
 }
 
 type userRateLimiter struct {
@@ -122,6 +123,7 @@ func newAssistant(cfg AssistantConfig, text localization.Localizer, store *state
 		users:     make(map[int64]userRateLimiter),
 		replies:   rate.NewLimiter(rate.Every(rejectionReplyWindow), 1),
 		history:   make(map[conversationKey]*conversation),
+		aliasSeed: randomAliasSeed(),
 	}
 }
 
@@ -308,10 +310,10 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	c.expireConversations(startedAt)
 	current := c.history[key]
 	if current == nil {
-		current = &conversation{}
+		current = &conversation{aliasSeed: c.aliasSeed}
 		c.history[key] = current
 	}
-	messages := current.messages(c.text)
+	messages := current.messages()
 	storedBefore := append([]deepseek.Message(nil), messages...)
 	if len(messages) > 0 {
 		c.metrics.observeAssistantContext("history")
@@ -323,19 +325,19 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	for _, username := range append(request.Mentions, request.ReplyMentions...) {
 		current.mentionAlias(username)
 	}
-	userMessage, hasReplyContext := current.userMessage(c.text, c.cfg.Name, request)
+	userMessage, hasReplyContext := current.userMessage(c.cfg.Name, request)
 	if hasReplyContext {
 		c.metrics.observeAssistantContext("reply")
 	}
-	completionUserMessage := userMessage
+	var externalContext string
 	usedPtchanContext := false
-	if externalContext, ok := c.ptchan.contextForRequest(ctx, request); ok {
+	if contextText, ok := c.ptchan.contextForRequest(ctx, request); ok {
 		c.metrics.observeAssistantContext("ptchan")
-		completionUserMessage = withExternalContext(userMessage, externalContext)
+		externalContext = contextText
 		usedPtchanContext = true
 	}
-	messages = append(messages, deepseek.Message{Role: deepseek.RoleUser, Content: formatUserMessage(c.text, userAlias, completionUserMessage)})
-	systemPrompt := c.cfg.SystemPrompt + "\n\n" + c.cfg.ChatPrompt
+	messages = append(messages, deepseek.Message{Role: deepseek.RoleUser, Content: formatTelegramCurrentRequest(userAlias, userMessage, len(storedBefore)/2, hasReplyContext, externalContext)})
+	systemPrompt := c.cfg.SystemPrompt
 	trace := &assistantTrace{
 		StartedAt:     startedAt,
 		MessageID:     request.MessageID,
@@ -390,13 +392,13 @@ func (c *assistant) handle(ctx context.Context, request assistantRequest) bool {
 	}
 	removed := current.remember(userAlias, userMessage, text, time.Now(), c.cfg.HistoryExchanges)
 	trace.Outcome = "stored"
-	trace.StoredAfter = current.messages(c.text)
+	trace.StoredAfter = current.messages()
 	trace.RemovedExchanges = removed
 	c.metrics.setActiveConversations(len(c.history))
 	if removed > 0 && c.cfg.LogMemory {
 		c.logger.Debug("assistant memory evicted", "chat_id", key.chatID, "thread_id", key.threadID, "removed", removed, "remaining", len(current.exchanges), "runes", current.runes())
 	}
-	c.logMemory("stored", key, current.messages(c.text))
+	c.logMemory("stored", key, current.messages())
 	return true
 }
 
