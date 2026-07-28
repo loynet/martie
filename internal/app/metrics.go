@@ -14,10 +14,10 @@ import (
 type metrics struct {
 	registry *prometheus.Registry
 
-	componentRuns             *prometheus.CounterVec
-	componentRunDuration      *prometheus.HistogramVec
-	componentLastRunSuccess   *prometheus.GaugeVec
-	componentLastRunTimestamp *prometheus.GaugeVec
+	workerRuns             *prometheus.CounterVec
+	workerRunDuration      *prometheus.HistogramVec
+	workerLastRunSuccess   *prometheus.GaugeVec
+	workerLastRunTimestamp *prometheus.GaugeVec
 
 	gatewayWebhooks *prometheus.CounterVec
 	gatewayEvents   *prometheus.CounterVec
@@ -47,23 +47,23 @@ const (
 func newMetrics() *metrics {
 	m := &metrics{
 		registry: prometheus.NewRegistry(),
-		componentRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_component_runs_total",
-			Help: "Component run attempts by result.",
-		}, []string{"component", "result"}),
-		componentRunDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "martie_component_run_duration_seconds",
-			Help:    "Component run duration in seconds.",
+		workerRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "martie_worker_runs_total",
+			Help: "Worker run attempts by result.",
+		}, []string{"worker", "result"}),
+		workerRunDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "martie_worker_run_duration_seconds",
+			Help:    "Worker run duration in seconds.",
 			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
-		}, []string{"component"}),
-		componentLastRunSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "martie_component_last_run_success",
-			Help: "Whether the last observed component run succeeded.",
-		}, []string{"component"}),
-		componentLastRunTimestamp: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "martie_component_last_run_timestamp_seconds",
-			Help: "Unix timestamp of the last observed component run.",
-		}, []string{"component", "result"}),
+		}, []string{"worker"}),
+		workerLastRunSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "martie_worker_last_run_success",
+			Help: "Whether the last observed worker run succeeded.",
+		}, []string{"worker"}),
+		workerLastRunTimestamp: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "martie_worker_last_run_timestamp_seconds",
+			Help: "Unix timestamp of the last observed worker run.",
+		}, []string{"worker", "result"}),
 		gatewayWebhooks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "martie_gateway_webhooks_total",
 			Help: "Signed ptchan-gateway webhook requests by result.",
@@ -112,10 +112,10 @@ func newMetrics() *metrics {
 			Name: "martie_up",
 			Help: "Whether the martie process is running.",
 		}, func() float64 { return 1 }),
-		m.componentRuns,
-		m.componentRunDuration,
-		m.componentLastRunSuccess,
-		m.componentLastRunTimestamp,
+		m.workerRuns,
+		m.workerRunDuration,
+		m.workerLastRunSuccess,
+		m.workerLastRunTimestamp,
 		m.gatewayWebhooks,
 		m.gatewayEvents,
 		m.notifications,
@@ -135,7 +135,7 @@ func (m *metrics) handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
-func (m *metrics) observeComponentRun(component string, duration time.Duration, err error) {
+func (m *metrics) observeWorkerRun(worker string, duration time.Duration, err error) {
 	result := metricResultSuccess
 	success := 1.0
 	if err != nil {
@@ -143,17 +143,21 @@ func (m *metrics) observeComponentRun(component string, duration time.Duration, 
 		success = 0
 	}
 
-	m.componentRuns.WithLabelValues(component, result).Inc()
-	m.componentRunDuration.WithLabelValues(component).Observe(duration.Seconds())
-	m.componentLastRunSuccess.WithLabelValues(component).Set(success)
-	m.componentLastRunTimestamp.WithLabelValues(component, result).SetToCurrentTime()
+	m.workerRuns.WithLabelValues(worker, result).Inc()
+	m.workerRunDuration.WithLabelValues(worker).Observe(duration.Seconds())
+	m.workerLastRunSuccess.WithLabelValues(worker).Set(success)
+	m.workerLastRunTimestamp.WithLabelValues(worker, result).SetToCurrentTime()
+}
+
+func (m *metrics) ObserveWorkerRun(worker string, duration time.Duration, err error) {
+	m.observeWorkerRun(worker, duration, err)
 }
 
 func (m *metrics) observeGatewayWebhook(result string) {
 	m.gatewayWebhooks.WithLabelValues(result).Inc()
 }
 
-func (m *metrics) observeGatewayEvent(consumer string, kind gateway.Kind, result string) {
+func (m *metrics) observeGatewayEvent(consumer string, kind gateway.EventKind, result string) {
 	m.gatewayEvents.WithLabelValues(consumer, string(kind), result).Inc()
 }
 
@@ -161,30 +165,34 @@ func (m *metrics) observeNotification(source, result string) {
 	m.notifications.WithLabelValues(source, result).Inc()
 }
 
-func (m *metrics) observeAssistantAdmission(surface ComponentName, result admissionResult) {
-	m.assistantAdmissions.WithLabelValues(string(surface), string(result)).Inc()
+func (m *metrics) ObserveNotification(source, result string) {
+	m.observeNotification(source, result)
 }
 
-func (m *metrics) observeAssistantReply(surface ComponentName, result string) {
-	m.assistantReplies.WithLabelValues(string(surface), result).Inc()
+func (m *metrics) ObserveAssistantAdmission(surface, result string) {
+	m.assistantAdmissions.WithLabelValues(surface, result).Inc()
 }
 
-func (m *metrics) observeAssistantContext(surface ComponentName, contextType string) {
-	m.assistantContext.WithLabelValues(string(surface), contextType).Inc()
+func (m *metrics) ObserveAssistantReply(surface, result string) {
+	m.assistantReplies.WithLabelValues(surface, result).Inc()
 }
 
-func (m *metrics) setActiveConversations(surface ComponentName, count int) {
-	m.assistantActiveConversations.WithLabelValues(string(surface)).Set(float64(count))
+func (m *metrics) ObserveAssistantContext(surface, contextType string) {
+	m.assistantContext.WithLabelValues(surface, contextType).Inc()
 }
 
-func (m *metrics) observeModelCompletion(surface ComponentName, provider, model string, duration time.Duration, completion deepseek.Completion, err error) {
-	m.modelDuration.WithLabelValues(string(surface), provider, model).Observe(duration.Seconds())
+func (m *metrics) SetActiveConversations(surface string, count int) {
+	m.assistantActiveConversations.WithLabelValues(surface).Set(float64(count))
+}
+
+func (m *metrics) ObserveModelCompletion(surface, provider, model string, duration time.Duration, completion deepseek.Completion, err error) {
+	m.modelDuration.WithLabelValues(surface, provider, model).Observe(duration.Seconds())
 	if err != nil {
-		m.modelRequests.WithLabelValues(string(surface), provider, model, metricResultError, "").Inc()
+		m.modelRequests.WithLabelValues(surface, provider, model, metricResultError, "").Inc()
 		return
 	}
-	m.modelRequests.WithLabelValues(string(surface), provider, model, metricResultSuccess, string(completion.FinishReason)).Inc()
-	m.modelTokens.WithLabelValues(string(surface), provider, model, "input_cache_hit").Add(float64(completion.Usage.PromptCacheHitTokens))
-	m.modelTokens.WithLabelValues(string(surface), provider, model, "input_cache_miss").Add(float64(completion.Usage.PromptCacheMissTokens))
-	m.modelTokens.WithLabelValues(string(surface), provider, model, "output").Add(float64(completion.Usage.CompletionTokens))
+	m.modelRequests.WithLabelValues(surface, provider, model, metricResultSuccess, string(completion.FinishReason)).Inc()
+	m.modelTokens.WithLabelValues(surface, provider, model, "input_cache_hit").Add(float64(completion.Usage.PromptCacheHitTokens))
+	m.modelTokens.WithLabelValues(surface, provider, model, "input_cache_miss").Add(float64(completion.Usage.PromptCacheMissTokens))
+	m.modelTokens.WithLabelValues(surface, provider, model, "output").Add(float64(completion.Usage.CompletionTokens))
 }

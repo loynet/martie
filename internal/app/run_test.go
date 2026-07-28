@@ -10,12 +10,12 @@ import (
 	"time"
 )
 
-func TestPollingComponentWaitsAfterPollCompletes(t *testing.T) {
+func TestPollingWorkerWaitsAfterPollCompletes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	interval := 30 * time.Millisecond
 	var calls []time.Time
-	component := pollingComponent("test", interval, func(context.Context) error {
+	worker := pollingWorker("test", interval, func(context.Context) error {
 		calls = append(calls, time.Now())
 		if len(calls) == 2 {
 			cancel()
@@ -23,7 +23,7 @@ func TestPollingComponentWaitsAfterPollCompletes(t *testing.T) {
 		return nil
 	}, newMetrics(), discardLogger())
 
-	if err := component.run(ctx); err != nil {
+	if err := worker.run(ctx); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	if len(calls) != 2 {

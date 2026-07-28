@@ -32,4 +32,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 	CMD ["/usr/local/bin/martie", "check-health"]
 
 ENTRYPOINT ["/usr/local/bin/martie"]
-CMD ["run"]
+CMD ["channer"]

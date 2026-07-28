@@ -12,7 +12,7 @@ import (
 func TestClientComplete(t *testing.T) {
 	var gotRequest *http.Request
 	client := New("secret", "deepseek-v4-flash", 500, 0)
-	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		gotRequest = req
 		return response(http.StatusOK, `{
 			"choices":[{"message":{"content":" Hello there. "},"finish_reason":"stop"}],
@@ -48,7 +48,7 @@ func TestClientComplete(t *testing.T) {
 
 func TestClientCompleteWithoutSystemPrompt(t *testing.T) {
 	client := New("secret", "deepseek-v4-flash", 500, 0)
-	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body completionRequest
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -66,7 +66,7 @@ func TestClientCompleteWithoutSystemPrompt(t *testing.T) {
 
 func TestClientCompleteAPIError(t *testing.T) {
 	client := New("secret", "deepseek-v4-flash", 500, 0)
-	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return response(http.StatusTooManyRequests, `{"error":{"message":"slow down"}}`), nil
 	})}
 
@@ -79,7 +79,7 @@ func TestClientCompleteAPIError(t *testing.T) {
 
 func TestClientCompleteReturnsEmptyFilteredChoice(t *testing.T) {
 	client := New("secret", "deepseek-v4-flash", 500, 0)
-	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client.HTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return response(http.StatusOK, `{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}`), nil
 	})}
 

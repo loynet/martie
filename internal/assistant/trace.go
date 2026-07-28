@@ -11,8 +11,6 @@ import (
 	"martie/internal/deepseek"
 )
 
-const assistantTracePattern = "martie-assistant-*.trace"
-
 type TraceConfig struct {
 	Enabled  bool
 	Dir      string
@@ -20,6 +18,7 @@ type TraceConfig struct {
 }
 
 type Trace struct {
+	Surface          string
 	StartedAt        time.Time
 	MessageID        int64
 	ThreadID         int64
@@ -57,7 +56,8 @@ func (d *TraceDumper) Dump(trace *Trace) (string, error) {
 		return "", fmt.Errorf("set trace directory permissions: %w", err)
 	}
 
-	name := fmt.Sprintf("martie-assistant-%s-message-%d-*.trace", trace.StartedAt.UTC().Format("20060102T150405.000000000Z"), trace.MessageID)
+	surface := cleanTraceSurface(trace.Surface)
+	name := fmt.Sprintf("martie-%s-%s-message-%d-*.trace", surface, trace.StartedAt.UTC().Format("20060102T150405.000000000Z"), trace.MessageID)
 	file, err := os.CreateTemp(d.dir, name)
 	if err != nil {
 		return "", fmt.Errorf("create trace: %w", err)
@@ -80,14 +80,14 @@ func (d *TraceDumper) Dump(trace *Trace) (string, error) {
 		return "", fmt.Errorf("close trace: %w", err)
 	}
 	remove = false
-	if err := d.prune(); err != nil {
+	if err := d.prune(surface); err != nil {
 		return path, fmt.Errorf("prune traces: %w", err)
 	}
 	return path, nil
 }
 
-func (d *TraceDumper) prune() error {
-	files, err := filepath.Glob(filepath.Join(d.dir, assistantTracePattern))
+func (d *TraceDumper) prune(surface string) error {
+	files, err := filepath.Glob(filepath.Join(d.dir, tracePattern(surface)))
 	if err != nil {
 		return err
 	}
@@ -103,9 +103,13 @@ func (d *TraceDumper) prune() error {
 	return nil
 }
 
+func tracePattern(surface string) string {
+	return fmt.Sprintf("martie-%s-*.trace", cleanTraceSurface(surface))
+}
+
 func FormatTrace(trace *Trace) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "ASSISTANT TRACE\nstarted_at: %s\nmessage_id: %d\ntelegram_thread_id: %d\nuser: %s\noutcome: %s\n\n", trace.StartedAt.Format(time.RFC3339Nano), trace.MessageID, trace.ThreadID, trace.UserAlias, trace.Outcome)
+	fmt.Fprintf(&b, "ASSISTANT TRACE\nsurface: %s\nstarted_at: %s\nmessage_id: %d\ntelegram_thread_id: %d\nuser: %s\noutcome: %s\n\n", cleanTraceSurface(trace.Surface), trace.StartedAt.Format(time.RFC3339Nano), trace.MessageID, trace.ThreadID, trace.UserAlias, trace.Outcome)
 	b.WriteString("CONTEXT DECISIONS\n")
 	fmt.Fprintf(&b, "history: %s\nreply: %s\nptchan: %s\n\n", yesNo(trace.UsedHistory), yesNo(trace.UsedReply), yesNo(trace.UsedPtchan))
 	writeTraceMessages(&b, "STORED BEFORE", trace.StoredBefore)
@@ -151,4 +155,22 @@ func yesNo(value bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+func cleanTraceSurface(surface string) string {
+	surface = strings.TrimSpace(surface)
+	if surface == "" {
+		return "assistant"
+	}
+	cleaned := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, surface)
+	cleaned = strings.Trim(cleaned, "-_")
+	if cleaned == "" {
+		return "assistant"
+	}
+	return cleaned
 }

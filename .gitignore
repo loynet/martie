@@ -10,7 +10,7 @@ data/
 *.test
 *.out
 coverage.out
-martie-assistant-*.trace
+martie-*.trace
 internal/assistant/testdata/local/
 
 # macOS

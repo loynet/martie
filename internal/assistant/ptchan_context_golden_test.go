@@ -12,8 +12,9 @@ import (
 )
 
 type ptchanContextGoldenMeta struct {
-	TargetPostID int64 `json:"target_post_id"`
-	MaxReplies   int   `json:"max_replies"`
+	TargetPostID  int64    `json:"target_post_id"`
+	MaxReplies    int      `json:"max_replies"`
+	SelfTripcodes []string `json:"self_tripcodes"`
 }
 
 func TestPtchanContextGoldenFiles(t *testing.T) {
@@ -40,7 +41,7 @@ func TestPtchanContextGoldenFiles(t *testing.T) {
 			}
 
 			meta := readPtchanContextGoldenMeta(t, strings.TrimSuffix(fixture, filepath.Ext(fixture))+".meta")
-			cfg := PtchanContextConfig{MaxReplies: meta.MaxReplies}
+			cfg := PtchanContextConfig{MaxReplies: meta.MaxReplies, SelfTripcodes: meta.SelfTripcodes}
 			if cfg.MaxReplies == 0 {
 				cfg.MaxReplies = DefaultMaxReplies
 			}

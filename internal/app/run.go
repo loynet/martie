@@ -11,32 +11,40 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
+	channerapp "martie/internal/apps/channer"
+	channerstate "martie/internal/apps/channer/state"
+	chatterapp "martie/internal/apps/chatter"
+	chatterstate "martie/internal/apps/chatter/state"
+	streamnotifierapp "martie/internal/apps/streamnotifier"
+	"martie/internal/apps/streamnotifier/probe"
+	streamnotifierstate "martie/internal/apps/streamnotifier/state"
+	threadnotifierapp "martie/internal/apps/threadnotifier"
+	threadnotifierstate "martie/internal/apps/threadnotifier/state"
 	"martie/internal/assistant"
 	"martie/internal/deepseek"
 	"martie/internal/gateway"
 	"martie/internal/localization"
-	"martie/internal/miau"
-	"martie/internal/state"
+	"martie/internal/storage"
 	"martie/internal/telegram"
 )
 
-type component struct {
-	name ComponentName
+type worker struct {
+	name WorkerName
 	run  func(context.Context) error
 }
-
-const ptchanGatewayThreadReadLimit = 50
 
 func Run(
 	ctx context.Context,
 	cfg Config,
-	store *state.Store,
-	streamClient *miau.Client,
+	db *storage.DB,
+	streamClient *probe.Client,
 	telegramClient *telegram.Client,
 	logger *slog.Logger,
 ) error {
 	metrics := newMetrics()
-	server, serverErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, logger.With("component", "http"))
+	server, serverErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, logger.With("worker", "http"))
 	if err != nil {
 		return err
 	}
@@ -44,92 +52,132 @@ func Run(
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	text := localization.New(cfg.Locale)
-	formatter := telegram.NewFormatter(text)
 
-	var components []component
+	var workers []worker
 	var gatewayEventConsumers []gatewayEventTarget
-	if cfg.runs(componentStreams) {
-		streams := streamPoller{
-			channels:         cfg.Streams.Channels,
-			format:           formatter,
-			endMissThreshold: cfg.Streams.EndMissThreshold,
-			chatID:           cfg.Telegram.NotificationChatID,
-			store:            store,
-			client:           streamClient,
-			telegram:         telegramClient,
-			metrics:          metrics,
-			logger:           logger.With("component", componentStreams),
+	switch cfg.App {
+	case AppStreamNotifier:
+		store, err := streamnotifierstate.New(db)
+		if err != nil {
+			return err
 		}
-		components = append(components, pollingComponent(componentStreams, cfg.Streams.PollInterval, streams.poll, metrics, logger))
-	}
-	if cfg.runs(componentGateway) {
-		notifier := &gatewayNotifier{
-			cfg:      cfg.Gateway,
-			ptchan:   cfg.Ptchan,
-			format:   formatter,
-			chatID:   cfg.Telegram.NotificationChatID,
-			store:    store,
-			telegram: telegramClient,
-			metrics:  metrics,
-			logger:   logger.With("component", componentGateway),
-			nowFunc:  time.Now,
+		streamNotifier := streamnotifierapp.Poller{
+			Channels:         cfg.StreamNotifier.Channels,
+			Format:           streamnotifierapp.NewFormatter(text),
+			EndMissThreshold: cfg.StreamNotifier.EndMissThreshold,
+			ChatID:           cfg.Telegram.NotificationChatID,
+			Store:            store,
+			Client:           streamClient,
+			Telegram:         telegramClient,
+			Metrics:          metrics,
+			Logger:           logger.With("worker", workerStreamNotifier),
 		}
-		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: componentGateway, consumer: notifier})
-		components = append(components, component{name: componentGateway, run: notifier.run})
-	}
-	if cfg.runs(componentTelegramAssistant) {
+		workers = append(workers, pollingWorker(workerStreamNotifier, cfg.StreamNotifier.PollInterval, streamNotifier.Poll, metrics, logger))
+	case AppThreadNotifier:
+		store, err := threadnotifierstate.New(db)
+		if err != nil {
+			return err
+		}
+		threadNotifier := &threadnotifierapp.Notifier{
+			Config:   cfg.ThreadNotifier,
+			Ptchan:   threadnotifierapp.PtchanConfig{BaseURL: cfg.Ptchan.BaseURL},
+			Format:   threadnotifierapp.NewFormatter(text),
+			ChatID:   cfg.Telegram.NotificationChatID,
+			Store:    store,
+			Telegram: telegramClient,
+			Metrics:  metrics,
+			Logger:   logger.With("worker", workerThreadNotifier),
+		}
+		threadNotifier.SetNowFunc(time.Now)
+		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: workerThreadNotifier, consumer: threadNotifier})
+		workers = append(workers, worker{name: workerThreadNotifier, run: threadNotifier.Run})
+	case AppChatter:
+		store, err := chatterstate.New(db)
+		if err != nil {
+			return err
+		}
 		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens, cfg.DeepSeek.Timeout)
-		telegramAssistant := newTelegramAssistant(cfg.TelegramAssistant, text, store, telegramClient, completer, metrics, logger.With("component", componentTelegramAssistant))
-		telegramAssistant.modelName = cfg.DeepSeek.Model
-		telegramAssistant.traces = assistant.NewTraceDumper(cfg.TelegramAssistant.Trace)
+		chatter := chatterapp.New(cfg.Chatter, text, store, telegramClient, completer, metrics, logger.With("worker", workerChatter))
+		chatter.SetModelName(cfg.DeepSeek.Model)
+		chatter.SetTraces(assistant.NewTraceDumper(cfg.Chatter.Trace))
 		var threadReader assistant.PtchanThreadReader
-		if cfg.TelegramAssistant.PtchanContext.Enabled {
-			client := gateway.NewThreadReader(
-				cfg.TelegramAssistant.PtchanContext.GatewayURL,
-				cfg.Ptchan.IntegrationName,
-				cfg.Ptchan.Secret,
-				cfg.TelegramAssistant.PtchanContext.Timeout,
-				ptchanGatewayThreadReadLimit,
+		if cfg.Chatter.PtchanContext.Enabled {
+			client := gateway.NewClient(
+				cfg.Chatter.PtchanContext.GatewayURL,
+				gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
+				cfg.Chatter.PtchanContext.Timeout,
 			)
-			checkCtx, cancel := context.WithTimeout(ctx, cfg.TelegramAssistant.PtchanContext.Timeout)
+			checkCtx, cancel := context.WithTimeout(ctx, cfg.Chatter.PtchanContext.Timeout)
 			if err := client.CheckReachable(checkCtx); err != nil {
-				logger.Warn("ptchan gateway thread reader unreachable", "component", componentTelegramAssistant, "gateway_url", cfg.TelegramAssistant.PtchanContext.GatewayURL, "error", err)
+				logger.Warn("ptchan gateway thread reader unreachable", "worker", workerChatter, "gateway_url", cfg.Chatter.PtchanContext.GatewayURL, "error", err)
 			}
 			cancel()
 			threadReader = client
 		}
-		telegramAssistant.ptchan = assistant.NewPtchanContext(cfg.TelegramAssistant.PtchanContext, threadReader, logger.With("component", componentTelegramAssistant, "context", "ptchan"))
-		components = append(components, component{name: componentTelegramAssistant, run: telegramAssistant.run})
-	}
-	if cfg.runs(componentPtchanAssistant) {
-		ptchanAssistantRunner := ptchanAssistant{
-			cfg:             cfg.PtchanAssistant,
-			integrationName: cfg.Ptchan.IntegrationName,
-			logger:          logger.With("component", componentPtchanAssistant),
-			metrics:         metrics,
+		chatter.SetPtchanContext(assistant.NewPtchanContext(cfg.Chatter.PtchanContext, threadReader, logger.With("worker", workerChatter, "context", "ptchan")))
+		workers = append(workers, worker{name: workerChatter, run: chatter.Run})
+	case AppChanner:
+		store, err := channerstate.New(db)
+		if err != nil {
+			return err
 		}
-		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: componentPtchanAssistant, consumer: ptchanAssistantRunner})
-		components = append(components, component{name: componentPtchanAssistant, run: ptchanAssistantRunner.run})
+		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens, cfg.DeepSeek.Timeout)
+		client := gateway.NewClient(
+			cfg.Ptchan.GatewayURL,
+			gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
+			cfg.Channer.PtchanContext.Timeout,
+		)
+		var threadReader assistant.PtchanThreadReader
+		if cfg.Channer.PtchanContext.Enabled {
+			contextClient := gateway.NewClient(
+				cfg.Channer.PtchanContext.GatewayURL,
+				gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
+				cfg.Channer.PtchanContext.Timeout,
+			)
+			checkCtx, cancel := context.WithTimeout(ctx, cfg.Channer.PtchanContext.Timeout)
+			if err := contextClient.CheckReachable(checkCtx); err != nil {
+				logger.Warn("ptchan gateway thread reader unreachable", "worker", workerChanner, "gateway_url", cfg.Channer.PtchanContext.GatewayURL, "error", err)
+			}
+			cancel()
+			threadReader = contextClient
+		}
+		ptchanResponder := channerapp.Responder{
+			Config:    cfg.Channer,
+			Store:     store,
+			Completer: completer,
+			ModelName: cfg.DeepSeek.Model,
+			Ptchan:    assistant.NewPtchanContext(cfg.Channer.PtchanContext, threadReader, logger.With("worker", workerChanner, "context", "ptchan")),
+			Poster:    client,
+			Traces:    assistant.NewTraceDumper(cfg.Channer.Trace),
+			Limit:     newRateLimiter(cfg.Channer.RequestLimit, cfg.Channer.RateLimitWindow, cfg.Channer.RequestBurst),
+			Logger:    logger.With("worker", workerChanner),
+			Metrics:   metrics,
+		}
+		ptchanResponder.SetNowFunc(time.Now)
+		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: workerChanner, consumer: ptchanResponder})
+		workers = append(workers, worker{name: workerChanner, run: ptchanResponder.Run})
+	default:
+		return fmt.Errorf("unknown app %q", cfg.App)
 	}
 	if len(gatewayEventConsumers) > 0 {
 		server := gatewayEventServer{
 			cfg:       cfg.Gateway.Webhook,
 			ptchan:    cfg.Ptchan,
 			consumers: gatewayEventConsumers,
-			logger:    logger.With("component", "gateway_events"),
+			logger:    logger.With("worker", workerGatewayEvents),
 			metrics:   metrics,
 			nowFunc:   time.Now,
 		}
-		components = append(components, component{name: "gateway_events", run: server.run})
+		workers = append(workers, worker{name: workerGatewayEvents, run: server.run})
 	}
-	logger.Info("service starting", "components", cfg.Runtime.Components)
+	logger.Info("service starting", "app", cfg.App)
 
-	var workers sync.WaitGroup
-	workers.Add(len(components))
-	for _, component := range components {
+	var group sync.WaitGroup
+	group.Add(len(workers))
+	for _, worker := range workers {
 		go func() {
-			defer workers.Done()
-			supervise(runCtx, component, logger)
+			defer group.Done()
+			supervise(runCtx, worker, logger)
 		}()
 	}
 
@@ -137,25 +185,25 @@ func Run(
 	case <-ctx.Done():
 	case err := <-serverErrors:
 		stop()
-		workers.Wait()
+		group.Wait()
 		return fmt.Errorf("http server: %w", err)
 	}
 	stop()
-	workers.Wait()
+	group.Wait()
 	logger.Info("shutdown requested")
 	return nil
 }
 
-func pollingComponent(name ComponentName, interval time.Duration, poll func(context.Context) error, metrics *metrics, logger *slog.Logger) component {
-	return component{
+func pollingWorker(name WorkerName, interval time.Duration, poll func(context.Context) error, metrics *metrics, logger *slog.Logger) worker {
+	return worker{
 		name: name,
 		run: func(ctx context.Context) error {
 			for {
 				startedAt := time.Now()
 				err := poll(ctx)
-				metrics.observeComponentRun(string(name), time.Since(startedAt), err)
+				metrics.observeWorkerRun(string(name), time.Since(startedAt), err)
 				if err != nil && ctx.Err() == nil {
-					logger.Warn("poll failed", "component", name, "error", err)
+					logger.Warn("poll failed", "worker", name, "error", err)
 				}
 
 				timer := time.NewTimer(interval)
@@ -170,13 +218,18 @@ func pollingComponent(name ComponentName, interval time.Duration, poll func(cont
 	}
 }
 
-func supervise(ctx context.Context, component component, logger *slog.Logger) {
+func newRateLimiter(requests int, window time.Duration, burst int) *rate.Limiter {
+	refill := rate.Limit(float64(requests) / window.Seconds())
+	return rate.NewLimiter(refill, burst)
+}
+
+func supervise(ctx context.Context, worker worker, logger *slog.Logger) {
 	for {
-		err := component.run(ctx)
+		err := worker.run(ctx)
 		if ctx.Err() != nil {
 			return
 		}
-		logger.Error("component stopped", "component", component.name, "error", err)
+		logger.Error("worker stopped", "worker", worker.name, "error", err)
 
 		timer := time.NewTimer(time.Second)
 		select {

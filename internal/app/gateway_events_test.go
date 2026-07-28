@@ -28,8 +28,8 @@ func TestGatewayEventServerDispatchesToConsumers(t *testing.T) {
 	server := gatewayEventServer{
 		ptchan: PtchanConfig{Secret: "secret"},
 		consumers: []gatewayEventTarget{
-			{name: componentGateway, consumer: first},
-			{name: componentPtchanAssistant, consumer: second},
+			{name: workerThreadNotifier, consumer: first},
+			{name: workerChanner, consumer: second},
 		},
 		logger:  discardLogger(),
 		metrics: newMetrics(),
@@ -37,6 +37,7 @@ func TestGatewayEventServerDispatchesToConsumers(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/internal/ptchan/events", bytes.NewReader(body))
 	timestamp := now.Format(time.RFC3339Nano)
+	request.Header.Set("x-ptchan-event-id", "ptchan:post.created:i:101")
 	request.Header.Set("x-ptchan-timestamp", timestamp)
 	request.Header.Set("x-ptchan-signature", webhookTestSignature("secret", timestamp, body))
 
@@ -52,10 +53,10 @@ func TestGatewayEventServerDispatchesToConsumers(t *testing.T) {
 }
 
 type recordingGatewayEventConsumer struct {
-	events []gateway.Event
+	events []gateway.WebhookEvent
 }
 
-func (c *recordingGatewayEventConsumer) consumeGatewayEvent(_ context.Context, event gateway.Event) error {
+func (c *recordingGatewayEventConsumer) ConsumeGatewayEvent(_ context.Context, event gateway.WebhookEvent) error {
 	c.events = append(c.events, event)
 	return nil
 }

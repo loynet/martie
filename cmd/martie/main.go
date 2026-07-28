@@ -10,13 +10,13 @@ import (
 	"syscall"
 
 	"martie/internal/app"
-	"martie/internal/miau"
-	"martie/internal/state"
+	"martie/internal/apps/streamnotifier/probe"
+	"martie/internal/storage"
 	"martie/internal/telegram"
 )
 
 func main() {
-	command, err := parseCommand(os.Args[1:])
+	command, appName, err := parseCommand(os.Args[1:])
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -31,6 +31,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	cfg, err = cfg.ForApp(appName)
+	if err != nil {
+		log.Fatalf("select app: %v", err)
+	}
 	logger := newLogger(cfg.Runtime.Logging)
 
 	if command == "run" || command == "check-config" {
@@ -43,7 +47,7 @@ func main() {
 		return
 	}
 
-	store, err := state.Open(cfg.Storage.SQLitePath)
+	store, err := storage.Open(cfg.Storage.SQLitePath)
 	if err != nil {
 		logger.Error("open sqlite", "error", err)
 		os.Exit(1)
@@ -55,7 +59,7 @@ func main() {
 
 	switch command {
 	case "run":
-		if err := app.Run(ctx, cfg, store, miau.New(), telegram.New(cfg.Telegram.BotToken, logger), logger); err != nil {
+		if err := app.Run(ctx, cfg, store, probe.New(), telegram.New(cfg.Telegram.BotToken, logger), logger); err != nil {
 			logger.Error("run service", "error", err)
 			os.Exit(1)
 		}
@@ -72,18 +76,36 @@ func newLogger(cfg app.LoggingConfig) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, options))
 }
 
-func parseCommand(args []string) (string, error) {
+func parseCommand(args []string) (string, app.AppName, error) {
 	if len(args) == 0 {
-		return "run", nil
+		return "", "", fmt.Errorf("usage: martie [chatter|channer|threadnotifier|streamnotifier|check-config|check-health]")
 	}
 
 	switch args[0] {
-	case "run", "check-config", "check-health":
-		if len(args) > 1 {
-			return "", fmt.Errorf("usage: martie [run|check-config|check-health]")
+	case "chatter", "channer", "threadnotifier", "streamnotifier":
+		appName, err := app.ParseAppName(args[0])
+		if err != nil {
+			return "", "", err
 		}
-		return args[0], nil
+		if len(args) > 1 {
+			return "", "", fmt.Errorf("usage: martie [chatter|channer|threadnotifier|streamnotifier|check-config|check-health]")
+		}
+		return "run", appName, nil
+	case "check-config":
+		if len(args) != 2 {
+			return "", "", fmt.Errorf("usage: martie check-config [chatter|channer|threadnotifier|streamnotifier]")
+		}
+		appName, err := app.ParseAppName(args[1])
+		if err != nil {
+			return "", "", err
+		}
+		return "check-config", appName, nil
+	case "check-health":
+		if len(args) > 1 {
+			return "", "", fmt.Errorf("usage: martie check-health")
+		}
+		return "check-health", "", nil
 	default:
-		return "", fmt.Errorf("usage: martie [run|check-config|check-health]")
+		return "", "", fmt.Errorf("usage: martie [chatter|channer|threadnotifier|streamnotifier|check-config|check-health]")
 	}
 }

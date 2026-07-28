@@ -9,26 +9,40 @@ base_url = "https://ptchan.org"
 # ptchan-gateway base URL used for signed context and posting requests.
 gateway_url = "http://ptchan-gateway:8080"
 # Integration name configured in ptchan-gateway. The matching secret is read from
-# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses PTCHAN_INTEGRATION_MARTIE_SECRET.
+# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses
+# PTCHAN_INTEGRATION_MARTIE_SECRET.
 integration_name = "martie"
+# Public tripcodes used by this assistant on ptchan. These are not secrets; they
+# label your prior assistant posts in fetched ptchan context.
+self_tripcodes = []
+
+# Uncomment only when split deployments use separate ptchan-gateway integrations.
+# [ptchan.chatter]
+# integration_name = "martie-chatter"
+#
+# [ptchan.channer]
+# integration_name = "martie-channer"
+#
+# [ptchan.threadnotifier]
+# integration_name = "martie-threadnotifier"
 
 [telegram]
 # Channel or chat that receives gateway and stream notifications.
 notification_chat_id = 123456789
-# Linked discussion group where the Telegram assistant accepts requests.
+# Linked discussion group where `chatter` accepts requests.
 discussion_chat_id = -1001234567890
-# Telegram user IDs allowed to invoke telegram_assistant when allow_all_users is false.
+# Telegram user IDs allowed to invoke chatter when allow_all_users is false.
 allowed_user_ids = [123456789]
 # Set this instead of allowed_user_ids to permit every human in the discussion chat.
 allow_all_users = false
 
-[telegram_assistant]
-# Telegram and ptchan assistants intentionally have separate system prompts and
+[chatter]
+# `chatter` and `channer` intentionally have separate system prompts and
 # settings. Telegram has named users and group memory; ptchan is public,
-# anonymous, quote-oriented, and should be handled by [ptchan_assistant].
+# anonymous, quote-oriented, and should be handled by `channer`.
 # Maximum Unicode characters accepted in one request.
 max_input_runes = 4096
-# Debug only: logs tokenized Telegram assistant history and message content.
+# Debug only: logs tokenized `chatter` history and message content.
 log_memory = false
 # Provider-facing personality and behavior. Replace this example in your
 # untracked config with the character, voice, boundaries, and response style you
@@ -39,12 +53,12 @@ system_prompt = """
 You are {{name}}, a helpful conversational assistant in Telegram.
 """
 
-[telegram_assistant.memory]
+[chatter.memory]
 # Forget exchanges after this duration and retain at most this many per topic.
 ttl = "10m"
 history_exchanges = 8
 
-[telegram_assistant.rate_limit]
+[chatter.rate_limit]
 # Token-bucket refill period shared by the per-user and global limits.
 window = "60m"
 # Requests granted to each user per window and the maximum immediate burst.
@@ -54,47 +68,47 @@ user_burst = 6
 global_limit = 100
 global_burst = 12
 
-# Delete this section to answer Telegram requests without reading ptchan-gateway threads.
-[telegram_assistant.ptchan_context]
-# Messages containing ptchan thread links read sanitized ptchan-gateway thread data
-# and render a bounded assistant context packet for the Telegram assistant.
-timeout = "5s"
-# Render the OP when available plus this many focused or recent non-OP posts.
-max_replies = 25
+# Uncomment to let `chatter` read ptchan-gateway threads linked from Telegram.
+# [chatter.ptchan_context]
+# timeout = "5s"
+# max_replies = 25
+#
+# Uncomment only when actively debugging `chatter` prompts.
+# [chatter.trace]
+# dir = "data/traces"
+# max_files = 100
 
-# Delete this section unless you are actively debugging Telegram assistant prompts.
-[telegram_assistant.trace]
-# Write one human-readable trace for each Telegram assistant interaction sent to the model.
-dir = "data/traces"
-# Oldest traces are removed after this many files.
-max_files = 100
-
-[ptchan_assistant]
-# The ptchan-native assistant surface is scaffolded here. Once implemented, it
-# will be invoked by signed gateway post events and reply through the signed
-# gateway posting API, not by fetching or posting to ptchan directly.
+[channer]
+# The ptchan-native assistant surface is invoked by signed gateway post events
+# and replies through the signed gateway posting API, not by fetching or posting
+# to ptchan directly.
 # Case-insensitive ptchan mentions that invoke Martie.
 mentions = ["@martie"]
 # Maximum Unicode characters accepted in one ptchan post request.
 max_input_runes = 4096
-# Debug only: logs ptchan assistant prompt inputs when implemented.
-log_memory = false
 # Separate public-posting personality and behavior for ptchan replies.
 system_prompt = """
 You are {{name}}, a helpful conversational assistant replying publicly on ptchan.
 """
 
-# Delete this section to keep assistant-side ptchan context unavailable to the future ptchan assistant.
-[ptchan_assistant.ptchan_context]
+[channer.rate_limit]
+# Public replies granted per window and maximum immediate burst. This is global
+# because ptchan posts are anonymous.
+window = "60m"
+request_limit = 25
+request_burst = 3
+
+# Delete this section to keep assistant-side ptchan context unavailable to `channer`.
+[channer.ptchan_context]
 # Read sanitized thread data from ptchan-gateway for the triggering thread/post.
 timeout = "5s"
 # Render the OP when available plus this many focused or recent non-OP posts.
 max_replies = 25
 
-# Delete this section unless you are actively debugging future ptchan assistant prompts.
-[ptchan_assistant.trace]
-dir = "data/traces"
-max_files = 100
+# Uncomment only when actively debugging `channer` prompts.
+# [channer.trace]
+# dir = "data/traces"
+# max_files = 100
 
 [deepseek]
 # Completion model sent to DeepSeek.
@@ -109,7 +123,7 @@ timeout = "60s"
 addr = ":8081"
 path = "/internal/ptchan/events"
 
-[gateway.notifications]
+[threadnotifier]
 # Notify after this many observed reply posts.
 min_reply_posts = 10
 # Boards and case-insensitive OP text fragments excluded from tracking.
@@ -121,8 +135,6 @@ max_thread_age = "0s"
 prune_after = "24h"
 
 [runtime]
-# Components run by this process: "gateway", "streams", "telegram_assistant", and/or "ptchan_assistant".
-components = ["gateway", "streams", "telegram_assistant"]
 # Process health/readiness and Prometheus address. Empty disables the endpoint.
 http_addr = ":9090"
 
@@ -133,22 +145,35 @@ level = "info"
 format = "text"
 
 [storage]
-# SQLite location.
+# SQLite location shared by default.
 sqlite_path = "data/martie.db"
 
-[streams]
+# Uncomment only when an app needs a distinct SQLite lifecycle or privacy boundary.
+# [storage.chatter]
+# sqlite_path = "data/martie-chatter.db"
+#
+# [storage.channer]
+# sqlite_path = "data/martie-channer.db"
+#
+# [storage.threadnotifier]
+# sqlite_path = "data/martie-threadnotifier.db"
+#
+# [storage.streamnotifier]
+# sqlite_path = "data/martie-streamnotifier.db"
+
+[streamnotifier]
 # How often to probe configured streams.
 poll_interval = "1m"
 # Mark an active stream offline after this many consecutive 404 responses.
 end_miss_threshold = 2
 
-[[streams.channel]]
+[[streamnotifier.channel]]
 # Stable storage key, URL used to detect liveness, and public link sent to Telegram.
 key = "main"
 probe_url = "https://stream.example.com/main/llhls.m3u8"
 page_url = "https://example.com/main"
 
-[[streams.channel]]
+[[streamnotifier.channel]]
 # Repeat the same three fields for each additional stream.
 key = "backup"
 probe_url = "https://stream.example.com/backup/llhls.m3u8"

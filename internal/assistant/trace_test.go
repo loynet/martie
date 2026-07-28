@@ -12,6 +12,7 @@ import (
 
 func TestFormatAssistantTraceSeparatesStoredAndModelContext(t *testing.T) {
 	trace := &Trace{
+		Surface:      "chatter",
 		StartedAt:    time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC),
 		MessageID:    42,
 		ThreadID:     7,
@@ -32,6 +33,7 @@ func TestFormatAssistantTraceSeparatesStoredAndModelContext(t *testing.T) {
 
 	got := FormatTrace(trace)
 	for _, want := range []string{
+		"surface: chatter",
 		"CONTEXT DECISIONS\nhistory: yes\nreply: yes\nptchan: yes",
 		"STORED BEFORE\n\n[MESSAGE 1 | user | 11 runes]\n    old request",
 		"MODEL REQUEST\n\n[SYSTEM | 13 runes]\n    system\n    prompt",
@@ -49,6 +51,7 @@ func TestAssistantTraceDumperWritesPrivateFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "traces")
 	dumper := NewTraceDumper(TraceConfig{Enabled: true, Dir: dir, MaxFiles: 100})
 	path, err := dumper.Dump(&Trace{
+		Surface:   "chatter",
 		StartedAt: time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC),
 		MessageID: 42,
 		Outcome:   "stored",
@@ -81,12 +84,12 @@ func TestAssistantTraceDumperPrunesOldestFiles(t *testing.T) {
 	}
 	startedAt := time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC)
 	for i := range 3 {
-		if _, err := dumper.Dump(&Trace{StartedAt: startedAt.Add(time.Duration(i) * time.Second), MessageID: int64(i + 1)}); err != nil {
+		if _, err := dumper.Dump(&Trace{Surface: "chatter", StartedAt: startedAt.Add(time.Duration(i) * time.Second), MessageID: int64(i + 1)}); err != nil {
 			t.Fatalf("dump trace %d: %v", i, err)
 		}
 	}
 
-	files, err := filepath.Glob(filepath.Join(dir, assistantTracePattern))
+	files, err := filepath.Glob(filepath.Join(dir, tracePattern("chatter")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +101,33 @@ func TestAssistantTraceDumperPrunesOldestFiles(t *testing.T) {
 	}
 	if contents, err := os.ReadFile(unrelated); err != nil || string(contents) != "keep" {
 		t.Fatalf("unrelated trace was changed: contents = %q, error = %v", contents, err)
+	}
+}
+
+func TestAssistantTraceDumperPrunesOnlyCurrentSurface(t *testing.T) {
+	dir := t.TempDir()
+	dumper := NewTraceDumper(TraceConfig{Enabled: true, Dir: dir, MaxFiles: 2})
+	startedAt := time.Date(2026, time.July, 11, 12, 24, 43, 0, time.UTC)
+
+	for i := range 3 {
+		if _, err := dumper.Dump(&Trace{Surface: "chatter", StartedAt: startedAt.Add(time.Duration(i) * time.Second), MessageID: int64(i + 1)}); err != nil {
+			t.Fatalf("dump chatter trace %d: %v", i, err)
+		}
+		if _, err := dumper.Dump(&Trace{Surface: "channer", StartedAt: startedAt.Add(time.Duration(i) * time.Second), MessageID: int64(i + 1)}); err != nil {
+			t.Fatalf("dump channer trace %d: %v", i, err)
+		}
+	}
+
+	chatterFiles, err := filepath.Glob(filepath.Join(dir, tracePattern("chatter")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	channerFiles, err := filepath.Glob(filepath.Join(dir, tracePattern("channer")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chatterFiles) != 2 || len(channerFiles) != 2 {
+		t.Fatalf("trace files = chatter:%v channer:%v, want two per surface", chatterFiles, channerFiles)
 	}
 }
 

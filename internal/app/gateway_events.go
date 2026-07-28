@@ -15,11 +15,11 @@ import (
 const maxGatewayEventBytes = 1 << 20
 
 type gatewayEventConsumer interface {
-	consumeGatewayEvent(context.Context, gateway.Event) error
+	ConsumeGatewayEvent(context.Context, gateway.WebhookEvent) error
 }
 
 type gatewayEventTarget struct {
-	name     ComponentName
+	name     WorkerName
 	consumer gatewayEventConsumer
 }
 
@@ -87,29 +87,16 @@ func (s gatewayEventServer) handleEvent(w http.ResponseWriter, r *http.Request) 
 	timestamp := r.Header.Get("x-ptchan-timestamp")
 	eventID := r.Header.Get("x-ptchan-event-id")
 	signature := r.Header.Get("x-ptchan-signature")
-	if err := gateway.VerifyWebhook(s.ptchan.Secret, timestamp, signature, body, s.nowFunc()); err != nil {
+	event, err := gateway.VerifyWebhookBody(s.ptchan.Secret, eventID, timestamp, signature, body, s.nowFunc())
+	if err != nil {
 		s.logger.Warn("gateway webhook rejected", "error", err)
 		s.metrics.observeGatewayWebhook("unauthorized")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	event, err := gateway.DecodeEvent(body)
-	if err != nil {
-		s.logger.Warn("gateway event rejected", "error", err)
-		s.metrics.observeGatewayWebhook("bad_event")
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	if eventID != "" && eventID != event.EventID {
-		s.logger.Warn("gateway event id mismatch", "event_id", event.EventID)
-		s.metrics.observeGatewayWebhook("event_id_mismatch")
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
 	for _, target := range s.consumers {
-		if err := target.consumer.consumeGatewayEvent(r.Context(), event); err != nil {
+		if err := target.consumer.ConsumeGatewayEvent(r.Context(), *event); err != nil {
 			s.metrics.observeGatewayEvent(string(target.name), event.Kind, metricResultError)
 			s.logger.Warn("gateway event failed", "event_id", event.EventID, "kind", event.Kind, "board", event.Post.Board, "thread_id", event.Post.ThreadID, "error", err)
 			s.metrics.observeGatewayWebhook("consumer_error")

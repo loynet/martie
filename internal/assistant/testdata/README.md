@@ -3,7 +3,7 @@
 These fixtures exercise Martie's assistant context rendering from sanitized
 thread data returned by `ptchan-gateway`. The renderer is shared infrastructure for any Martie
 surface that needs ptchan context, including Telegram link enrichment and the
-planned ptchan-native assistant.
+ptchan-native assistant.
 
 Each test case is a gateway thread read captured as JSON plus the prompt packet
 Martie is expected to render from it. The goal is to make assistant context behavior easy

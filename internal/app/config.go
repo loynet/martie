@@ -11,29 +11,42 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	channerapp "martie/internal/apps/channer"
+	chatterapp "martie/internal/apps/chatter"
+	streamnotifierapp "martie/internal/apps/streamnotifier"
+	"martie/internal/apps/streamnotifier/probe"
+	threadnotifierapp "martie/internal/apps/threadnotifier"
 	"martie/internal/assistant"
 	"martie/internal/localization"
-	"martie/internal/miau"
-	"martie/internal/ptchan"
 )
 
 type Config struct {
-	Locale            localization.Locale
-	Ptchan            PtchanConfig
-	Telegram          TelegramConfig
-	TelegramAssistant TelegramAssistantConfig
-	PtchanAssistant   PtchanAssistantConfig
-	DeepSeek          DeepSeekConfig
-	Gateway           GatewayConfig
-	Streams           StreamsConfig
-	Runtime           RuntimeConfig
-	Storage           StorageConfig
+	App                   AppName
+	Locale                localization.Locale
+	Ptchan                PtchanConfig
+	ChatterPtchan         PtchanConfig
+	ChannerPtchan         PtchanConfig
+	ThreadNotifierPtchan  PtchanConfig
+	Telegram              TelegramConfig
+	Chatter               chatterapp.Config
+	Channer               channerapp.Config
+	DeepSeek              DeepSeekConfig
+	Gateway               GatewayConfig
+	ThreadNotifier        threadnotifierapp.Config
+	StreamNotifier        streamnotifierapp.Config
+	Runtime               RuntimeConfig
+	Storage               StorageConfig
+	ChatterStorage        StorageConfig
+	ChannerStorage        StorageConfig
+	ThreadNotifierStorage StorageConfig
+	StreamNotifierStorage StorageConfig
 }
 
 type PtchanConfig struct {
 	BaseURL         string
 	GatewayURL      string
 	IntegrationName string
+	SelfTripcodes   []string
 	Secret          string
 }
 
@@ -41,39 +54,6 @@ type TelegramConfig struct {
 	BotToken           string
 	NotificationChatID int64
 }
-
-type TelegramAssistantConfig struct {
-	Name               string
-	DiscussionChatID   int64
-	AllowAllUsers      bool
-	AllowedUserIDs     []int64
-	RateLimitWindow    time.Duration
-	UserRequestLimit   int
-	UserRequestBurst   int
-	GlobalRequestLimit int
-	GlobalRequestBurst int
-	SystemPrompt       string
-	MaxInputRunes      int
-	LogMemory          bool
-	Trace              AssistantTraceConfig
-	ConversationTTL    time.Duration
-	HistoryExchanges   int
-	PtchanContext      PtchanContextConfig
-}
-
-type PtchanAssistantConfig struct {
-	Name          string
-	Mentions      []string
-	SystemPrompt  string
-	MaxInputRunes int
-	LogMemory     bool
-	PtchanContext PtchanContextConfig
-	Trace         AssistantTraceConfig
-}
-
-type AssistantTraceConfig = assistant.TraceConfig
-
-type PtchanContextConfig = assistant.PtchanContextConfig
 
 type DeepSeekConfig struct {
 	APIKey    string
@@ -83,8 +63,7 @@ type DeepSeekConfig struct {
 }
 
 type GatewayConfig struct {
-	Webhook       GatewayWebhookConfig
-	Notifications GatewayNotificationConfig
+	Webhook GatewayWebhookConfig
 }
 
 type GatewayWebhookConfig struct {
@@ -92,31 +71,28 @@ type GatewayWebhookConfig struct {
 	Path string
 }
 
-type GatewayNotificationConfig struct {
-	MinReplyPosts int
-	Filter        ptchan.Filter
-	PruneAfter    time.Duration
-}
-
-type StreamsConfig struct {
-	Channels         []miau.Channel
-	PollInterval     time.Duration
-	EndMissThreshold int
-}
-
 type RuntimeConfig struct {
-	Components []ComponentName
-	HTTPAddr   string
-	Logging    LoggingConfig
+	HTTPAddr string
+	Logging  LoggingConfig
 }
 
-type ComponentName string
+type AppName string
 
 const (
-	componentTelegramAssistant ComponentName = "telegram_assistant"
-	componentPtchanAssistant   ComponentName = "ptchan_assistant"
-	componentGateway           ComponentName = "gateway"
-	componentStreams           ComponentName = "streams"
+	AppChatter        AppName = "chatter"
+	AppChanner        AppName = "channer"
+	AppThreadNotifier AppName = "threadnotifier"
+	AppStreamNotifier AppName = "streamnotifier"
+)
+
+type WorkerName string
+
+const (
+	workerChatter        WorkerName = "chatter"
+	workerChanner        WorkerName = "channer"
+	workerThreadNotifier WorkerName = "threadnotifier"
+	workerStreamNotifier WorkerName = "streamnotifier"
+	workerGatewayEvents  WorkerName = "gateway_events"
 )
 
 type LoggingConfig struct {
@@ -136,22 +112,31 @@ type StorageConfig struct {
 }
 
 type fileConfig struct {
-	Locale            string                      `toml:"locale"`
-	Name              string                      `toml:"name"`
-	Ptchan            filePtchanConfig            `toml:"ptchan"`
-	Telegram          fileTelegramConfig          `toml:"telegram"`
-	TelegramAssistant fileTelegramAssistantConfig `toml:"telegram_assistant"`
-	PtchanAssistant   filePtchanAssistantConfig   `toml:"ptchan_assistant"`
-	DeepSeek          fileDeepSeekConfig          `toml:"deepseek"`
-	Gateway           fileGatewayConfig           `toml:"gateway"`
-	Streams           fileStreamsConfig           `toml:"streams"`
-	Runtime           fileRuntimeConfig           `toml:"runtime"`
-	Storage           fileStorageConfig           `toml:"storage"`
+	Locale         string                   `toml:"locale"`
+	Name           string                   `toml:"name"`
+	Ptchan         filePtchanConfig         `toml:"ptchan"`
+	Telegram       fileTelegramConfig       `toml:"telegram"`
+	Chatter        fileChatterConfig        `toml:"chatter"`
+	Channer        fileChannerConfig        `toml:"channer"`
+	DeepSeek       fileDeepSeekConfig       `toml:"deepseek"`
+	Gateway        fileGatewayConfig        `toml:"gateway"`
+	ThreadNotifier fileThreadNotifierConfig `toml:"threadnotifier"`
+	StreamNotifier fileStreamNotifierConfig `toml:"streamnotifier"`
+	Runtime        fileRuntimeConfig        `toml:"runtime"`
+	Storage        fileStorageConfig        `toml:"storage"`
 }
 
 type filePtchanConfig struct {
-	BaseURL         string `toml:"base_url"`
-	GatewayURL      string `toml:"gateway_url"`
+	BaseURL         string                      `toml:"base_url"`
+	GatewayURL      string                      `toml:"gateway_url"`
+	IntegrationName string                      `toml:"integration_name"`
+	SelfTripcodes   []string                    `toml:"self_tripcodes"`
+	Chatter         filePtchanIntegrationConfig `toml:"chatter"`
+	Channer         filePtchanIntegrationConfig `toml:"channer"`
+	ThreadNotifier  filePtchanIntegrationConfig `toml:"threadnotifier"`
+}
+
+type filePtchanIntegrationConfig struct {
 	IntegrationName string `toml:"integration_name"`
 }
 
@@ -162,7 +147,7 @@ type fileTelegramConfig struct {
 	AllowAllUsers      bool    `toml:"allow_all_users"`
 }
 
-type fileTelegramAssistantConfig struct {
+type fileChatterConfig struct {
 	MaxInputRunes int                 `toml:"max_input_runes"`
 	LogMemory     bool                `toml:"log_memory"`
 	SystemPrompt  string              `toml:"system_prompt"`
@@ -172,13 +157,19 @@ type fileTelegramAssistantConfig struct {
 	Trace         *fileAssistantTrace `toml:"trace"`
 }
 
-type filePtchanAssistantConfig struct {
-	Mentions      []string            `toml:"mentions"`
-	MaxInputRunes int                 `toml:"max_input_runes"`
-	LogMemory     bool                `toml:"log_memory"`
-	SystemPrompt  string              `toml:"system_prompt"`
-	PtchanContext *filePtchanContext  `toml:"ptchan_context"`
-	Trace         *fileAssistantTrace `toml:"trace"`
+type fileChannerConfig struct {
+	Mentions      []string                   `toml:"mentions"`
+	MaxInputRunes int                        `toml:"max_input_runes"`
+	SystemPrompt  string                     `toml:"system_prompt"`
+	RateLimit     fileChannerRateLimitConfig `toml:"rate_limit"`
+	PtchanContext *filePtchanContext         `toml:"ptchan_context"`
+	Trace         *fileAssistantTrace        `toml:"trace"`
+}
+
+type fileChannerRateLimitConfig struct {
+	Window       string `toml:"window"`
+	RequestLimit int    `toml:"request_limit"`
+	RequestBurst int    `toml:"request_burst"`
 }
 
 type fileAssistantTrace struct {
@@ -211,8 +202,7 @@ type fileDeepSeekConfig struct {
 }
 
 type fileGatewayConfig struct {
-	Webhook       fileGatewayWebhookConfig      `toml:"webhook"`
-	Notifications fileGatewayNotificationConfig `toml:"notifications"`
+	Webhook fileGatewayWebhookConfig `toml:"webhook"`
 }
 
 type fileGatewayWebhookConfig struct {
@@ -220,7 +210,7 @@ type fileGatewayWebhookConfig struct {
 	Path string `toml:"path"`
 }
 
-type fileGatewayNotificationConfig struct {
+type fileThreadNotifierConfig struct {
 	MinReplyPosts   int      `toml:"min_reply_posts"`
 	BoardDenylist   []string `toml:"board_denylist"`
 	KeywordDenylist []string `toml:"keyword_denylist"`
@@ -229,12 +219,19 @@ type fileGatewayNotificationConfig struct {
 }
 
 type fileRuntimeConfig struct {
-	Components []string          `toml:"components"`
-	HTTPAddr   string            `toml:"http_addr"`
-	Logging    fileLoggingConfig `toml:"logging"`
+	HTTPAddr string            `toml:"http_addr"`
+	Logging  fileLoggingConfig `toml:"logging"`
 }
 
 type fileStorageConfig struct {
+	SQLitePath     string               `toml:"sqlite_path"`
+	Chatter        fileAppStorageConfig `toml:"chatter"`
+	Channer        fileAppStorageConfig `toml:"channer"`
+	ThreadNotifier fileAppStorageConfig `toml:"threadnotifier"`
+	StreamNotifier fileAppStorageConfig `toml:"streamnotifier"`
+}
+
+type fileAppStorageConfig struct {
 	SQLitePath string `toml:"sqlite_path"`
 }
 
@@ -243,7 +240,7 @@ type fileLoggingConfig struct {
 	Format string `toml:"format"`
 }
 
-type fileStreamsConfig struct {
+type fileStreamNotifierConfig struct {
 	EndMissThreshold int                `toml:"end_miss_threshold"`
 	PollInterval     string             `toml:"poll_interval"`
 	Channels         []fileStreamConfig `toml:"channel"`
@@ -263,7 +260,7 @@ func defaultFileConfig() fileConfig {
 			GatewayURL:      "http://ptchan-gateway:8080",
 			IntegrationName: "martie",
 		},
-		TelegramAssistant: fileTelegramAssistantConfig{
+		Chatter: fileChatterConfig{
 			MaxInputRunes: 4096,
 			Memory: fileMemoryConfig{
 				TTL:              "10m",
@@ -277,9 +274,14 @@ func defaultFileConfig() fileConfig {
 				GlobalBurst: 12,
 			},
 		},
-		PtchanAssistant: filePtchanAssistantConfig{
+		Channer: fileChannerConfig{
 			Mentions:      []string{"@martie"},
 			MaxInputRunes: 4096,
+			RateLimit: fileChannerRateLimitConfig{
+				Window:       "60m",
+				RequestLimit: 25,
+				RequestBurst: 3,
+			},
 		},
 		DeepSeek: fileDeepSeekConfig{
 			Model:     "deepseek-v4-flash",
@@ -291,11 +293,11 @@ func defaultFileConfig() fileConfig {
 				Addr: ":8081",
 				Path: "/internal/ptchan/events",
 			},
-			Notifications: fileGatewayNotificationConfig{
-				MinReplyPosts: 10,
-				MaxThreadAge:  "0s",
-				PruneAfter:    "720h",
-			},
+		},
+		ThreadNotifier: fileThreadNotifierConfig{
+			MinReplyPosts: 10,
+			MaxThreadAge:  "0s",
+			PruneAfter:    "720h",
 		},
 		Runtime: fileRuntimeConfig{
 			Logging: fileLoggingConfig{
@@ -303,8 +305,8 @@ func defaultFileConfig() fileConfig {
 				Format: string(LogText),
 			},
 		},
-		Storage: fileStorageConfig{SQLitePath: "data/martie.db"},
-		Streams: fileStreamsConfig{EndMissThreshold: 2, PollInterval: "60s"},
+		Storage:        fileStorageConfig{SQLitePath: "data/martie.db"},
+		StreamNotifier: fileStreamNotifierConfig{EndMissThreshold: 2, PollInterval: "60s"},
 	}
 }
 
@@ -335,61 +337,72 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	telegramPtchanContext := assistantPtchanContextConfig(raw.TelegramAssistant.PtchanContext)
-	telegramTrace := assistantTraceConfig(raw.TelegramAssistant.Trace)
-	ptchanContext := assistantPtchanContextConfig(raw.PtchanAssistant.PtchanContext)
-	ptchanTrace := assistantTraceConfig(raw.PtchanAssistant.Trace)
+	chatterPtchanContext := assistantPtchanContextConfig(raw.Chatter.PtchanContext)
+	chatterTrace := assistantTraceConfig(raw.Chatter.Trace)
+	ptchanContext := assistantPtchanContextConfig(raw.Channer.PtchanContext)
+	ptchanTrace := assistantTraceConfig(raw.Channer.Trace)
+	basePtchan := PtchanConfig{
+		BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
+		GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
+		IntegrationName: strings.TrimSpace(raw.Ptchan.IntegrationName),
+		SelfTripcodes:   cleanTripcodes(raw.Ptchan.SelfTripcodes),
+	}
+	basePtchan.Secret = strings.TrimSpace(os.Getenv(integrationSecretEnv(basePtchan.IntegrationName)))
+	chatterPtchan := ptchanIntegrationConfig(basePtchan, raw.Ptchan.Chatter)
+	channerPtchan := ptchanIntegrationConfig(basePtchan, raw.Ptchan.Channer)
+	threadNotifierPtchan := ptchanIntegrationConfig(basePtchan, raw.Ptchan.ThreadNotifier)
 	cfg := Config{
-		Locale: locale,
-		Ptchan: PtchanConfig{
-			BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
-			GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
-			IntegrationName: strings.TrimSpace(raw.Ptchan.IntegrationName),
-			Secret:          strings.TrimSpace(os.Getenv(integrationSecretEnv(raw.Ptchan.IntegrationName))),
-		},
+		Locale:               locale,
+		Ptchan:               basePtchan,
+		ChatterPtchan:        chatterPtchan,
+		ChannerPtchan:        channerPtchan,
+		ThreadNotifierPtchan: threadNotifierPtchan,
 		Telegram: TelegramConfig{
 			BotToken:           strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 			NotificationChatID: raw.Telegram.NotificationChatID,
 		},
-		TelegramAssistant: TelegramAssistantConfig{
+		Chatter: chatterapp.Config{
 			Name:               strings.TrimSpace(raw.Name),
 			DiscussionChatID:   raw.Telegram.DiscussionChatID,
 			AllowAllUsers:      raw.Telegram.AllowAllUsers,
 			AllowedUserIDs:     raw.Telegram.AllowedUserIDs,
-			UserRequestLimit:   raw.TelegramAssistant.RateLimit.UserLimit,
-			UserRequestBurst:   raw.TelegramAssistant.RateLimit.UserBurst,
-			GlobalRequestLimit: raw.TelegramAssistant.RateLimit.GlobalLimit,
-			GlobalRequestBurst: raw.TelegramAssistant.RateLimit.GlobalBurst,
-			MaxInputRunes:      raw.TelegramAssistant.MaxInputRunes,
-			LogMemory:          raw.TelegramAssistant.LogMemory,
-			Trace: AssistantTraceConfig{
-				Enabled:  raw.TelegramAssistant.Trace != nil,
-				Dir:      filepath.Clean(strings.TrimSpace(telegramTrace.Dir)),
-				MaxFiles: telegramTrace.MaxFiles,
+			UserRequestLimit:   raw.Chatter.RateLimit.UserLimit,
+			UserRequestBurst:   raw.Chatter.RateLimit.UserBurst,
+			GlobalRequestLimit: raw.Chatter.RateLimit.GlobalLimit,
+			GlobalRequestBurst: raw.Chatter.RateLimit.GlobalBurst,
+			MaxInputRunes:      raw.Chatter.MaxInputRunes,
+			LogMemory:          raw.Chatter.LogMemory,
+			Trace: assistant.TraceConfig{
+				Enabled:  raw.Chatter.Trace != nil,
+				Dir:      filepath.Clean(strings.TrimSpace(chatterTrace.Dir)),
+				MaxFiles: chatterTrace.MaxFiles,
 			},
-			HistoryExchanges: raw.TelegramAssistant.Memory.HistoryExchanges,
-			PtchanContext: PtchanContextConfig{
-				Enabled:    raw.TelegramAssistant.PtchanContext != nil,
-				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
-				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
-				MaxReplies: telegramPtchanContext.MaxReplies,
+			HistoryExchanges: raw.Chatter.Memory.HistoryExchanges,
+			PtchanContext: assistant.PtchanContextConfig{
+				Enabled:       raw.Chatter.PtchanContext != nil,
+				BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
+				GatewayURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
+				MaxReplies:    chatterPtchanContext.MaxReplies,
+				SelfTripcodes: cleanTripcodes(raw.Ptchan.SelfTripcodes),
 			},
 		},
-		PtchanAssistant: PtchanAssistantConfig{
+		Channer: channerapp.Config{
 			Name:          strings.TrimSpace(raw.Name),
-			Mentions:      cleanMentions(raw.PtchanAssistant.Mentions),
-			MaxInputRunes: raw.PtchanAssistant.MaxInputRunes,
-			LogMemory:     raw.PtchanAssistant.LogMemory,
-			Trace: AssistantTraceConfig{
-				Enabled:  raw.PtchanAssistant.Trace != nil,
+			Mentions:      cleanMentions(raw.Channer.Mentions),
+			MaxInputRunes: raw.Channer.MaxInputRunes,
+			RequestLimit:  raw.Channer.RateLimit.RequestLimit,
+			RequestBurst:  raw.Channer.RateLimit.RequestBurst,
+			Trace: assistant.TraceConfig{
+				Enabled:  raw.Channer.Trace != nil,
 				Dir:      filepath.Clean(strings.TrimSpace(ptchanTrace.Dir)),
 				MaxFiles: ptchanTrace.MaxFiles,
 			},
-			PtchanContext: PtchanContextConfig{
-				Enabled:    raw.PtchanAssistant.PtchanContext != nil,
-				BaseURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
-				GatewayURL: strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
-				MaxReplies: ptchanContext.MaxReplies,
+			PtchanContext: assistant.PtchanContextConfig{
+				Enabled:       raw.Channer.PtchanContext != nil,
+				BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
+				GatewayURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
+				MaxReplies:    ptchanContext.MaxReplies,
+				SelfTripcodes: cleanTripcodes(raw.Ptchan.SelfTripcodes),
 			},
 		},
 		DeepSeek: DeepSeekConfig{
@@ -402,21 +415,25 @@ func LoadConfig() (Config, error) {
 				Addr: strings.TrimSpace(raw.Gateway.Webhook.Addr),
 				Path: cleanGatewayPath(raw.Gateway.Webhook.Path),
 			},
-			Notifications: GatewayNotificationConfig{
-				MinReplyPosts: raw.Gateway.Notifications.MinReplyPosts,
-				Filter: ptchan.Filter{
-					BoardDenylist:   raw.Gateway.Notifications.BoardDenylist,
-					KeywordDenylist: raw.Gateway.Notifications.KeywordDenylist,
-				},
+		},
+		ThreadNotifier: threadnotifierapp.Config{
+			MinReplyPosts: raw.ThreadNotifier.MinReplyPosts,
+			Filter: threadnotifierapp.Filter{
+				BoardDenylist:   raw.ThreadNotifier.BoardDenylist,
+				KeywordDenylist: raw.ThreadNotifier.KeywordDenylist,
 			},
 		},
-		Streams: StreamsConfig{EndMissThreshold: raw.Streams.EndMissThreshold},
-		Runtime: RuntimeConfig{HTTPAddr: strings.TrimSpace(raw.Runtime.HTTPAddr)},
-		Storage: StorageConfig{SQLitePath: filepath.Clean(strings.TrimSpace(raw.Storage.SQLitePath))},
+		StreamNotifier:        streamnotifierapp.Config{EndMissThreshold: raw.StreamNotifier.EndMissThreshold},
+		Runtime:               RuntimeConfig{HTTPAddr: strings.TrimSpace(raw.Runtime.HTTPAddr)},
+		Storage:               StorageConfig{SQLitePath: cleanPath(raw.Storage.SQLitePath)},
+		ChatterStorage:        appStorageConfig(raw.Storage.Chatter),
+		ChannerStorage:        appStorageConfig(raw.Storage.Channer),
+		ThreadNotifierStorage: appStorageConfig(raw.Storage.ThreadNotifier),
+		StreamNotifierStorage: appStorageConfig(raw.Storage.StreamNotifier),
 	}
 
-	cfg.TelegramAssistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.TelegramAssistant.SystemPrompt), "{{name}}", cfg.TelegramAssistant.Name)
-	cfg.PtchanAssistant.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.PtchanAssistant.SystemPrompt), "{{name}}", cfg.PtchanAssistant.Name)
+	cfg.Chatter.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Chatter.SystemPrompt), "{{name}}", cfg.Chatter.Name)
+	cfg.Channer.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Channer.SystemPrompt), "{{name}}", cfg.Channer.Name)
 	if cfg.Ptchan.BaseURL == "" {
 		return Config{}, fmt.Errorf("ptchan.base_url is required")
 	}
@@ -426,41 +443,44 @@ func LoadConfig() (Config, error) {
 	if cfg.Ptchan.IntegrationName == "" {
 		return Config{}, fmt.Errorf("ptchan.integration_name is required")
 	}
-	if cfg.TelegramAssistant.MaxInputRunes <= 0 {
-		return Config{}, fmt.Errorf("telegram_assistant.max_input_runes must be positive")
+	if cfg.Chatter.MaxInputRunes <= 0 {
+		return Config{}, fmt.Errorf("chatter.max_input_runes must be positive")
 	}
-	if cfg.TelegramAssistant.HistoryExchanges <= 0 {
-		return Config{}, fmt.Errorf("telegram_assistant.memory.history_exchanges must be positive")
+	if cfg.Chatter.HistoryExchanges <= 0 {
+		return Config{}, fmt.Errorf("chatter.memory.history_exchanges must be positive")
 	}
-	if cfg.TelegramAssistant.UserRequestLimit <= 0 || cfg.TelegramAssistant.UserRequestBurst <= 0 || cfg.TelegramAssistant.UserRequestBurst > cfg.TelegramAssistant.UserRequestLimit {
-		return Config{}, fmt.Errorf("telegram_assistant.rate_limit.user_burst must be positive and no greater than user_limit")
+	if cfg.Chatter.UserRequestLimit <= 0 || cfg.Chatter.UserRequestBurst <= 0 || cfg.Chatter.UserRequestBurst > cfg.Chatter.UserRequestLimit {
+		return Config{}, fmt.Errorf("chatter.rate_limit.user_burst must be positive and no greater than user_limit")
 	}
-	if cfg.TelegramAssistant.GlobalRequestLimit <= 0 || cfg.TelegramAssistant.GlobalRequestBurst <= 0 || cfg.TelegramAssistant.GlobalRequestBurst > cfg.TelegramAssistant.GlobalRequestLimit {
-		return Config{}, fmt.Errorf("telegram_assistant.rate_limit.global_burst must be positive and no greater than global_limit")
+	if cfg.Chatter.GlobalRequestLimit <= 0 || cfg.Chatter.GlobalRequestBurst <= 0 || cfg.Chatter.GlobalRequestBurst > cfg.Chatter.GlobalRequestLimit {
+		return Config{}, fmt.Errorf("chatter.rate_limit.global_burst must be positive and no greater than global_limit")
 	}
-	if cfg.TelegramAssistant.PtchanContext.MaxReplies <= 0 {
-		return Config{}, fmt.Errorf("telegram_assistant.ptchan_context.max_replies must be positive")
+	if cfg.Chatter.PtchanContext.MaxReplies <= 0 {
+		return Config{}, fmt.Errorf("chatter.ptchan_context.max_replies must be positive")
 	}
-	if cfg.TelegramAssistant.Trace.MaxFiles <= 0 {
-		return Config{}, fmt.Errorf("telegram_assistant.trace.max_files must be positive")
+	if cfg.Chatter.Trace.MaxFiles <= 0 {
+		return Config{}, fmt.Errorf("chatter.trace.max_files must be positive")
 	}
-	if cfg.TelegramAssistant.Trace.Enabled && cfg.TelegramAssistant.Trace.Dir == "." {
-		return Config{}, fmt.Errorf("telegram_assistant.trace.dir is required when enabled")
+	if cfg.Chatter.Trace.Enabled && cfg.Chatter.Trace.Dir == "." {
+		return Config{}, fmt.Errorf("chatter.trace.dir is required when enabled")
 	}
-	if cfg.PtchanAssistant.MaxInputRunes <= 0 {
-		return Config{}, fmt.Errorf("ptchan_assistant.max_input_runes must be positive")
+	if cfg.Channer.MaxInputRunes <= 0 {
+		return Config{}, fmt.Errorf("channer.max_input_runes must be positive")
 	}
-	if len(cfg.PtchanAssistant.Mentions) == 0 {
-		return Config{}, fmt.Errorf("ptchan_assistant.mentions requires at least one mention")
+	if len(cfg.Channer.Mentions) == 0 {
+		return Config{}, fmt.Errorf("channer.mentions requires at least one mention")
 	}
-	if cfg.PtchanAssistant.PtchanContext.MaxReplies <= 0 {
-		return Config{}, fmt.Errorf("ptchan_assistant.ptchan_context.max_replies must be positive")
+	if cfg.Channer.RequestLimit <= 0 || cfg.Channer.RequestBurst <= 0 || cfg.Channer.RequestBurst > cfg.Channer.RequestLimit {
+		return Config{}, fmt.Errorf("channer.rate_limit.request_burst must be positive and no greater than request_limit")
 	}
-	if cfg.PtchanAssistant.Trace.MaxFiles <= 0 {
-		return Config{}, fmt.Errorf("ptchan_assistant.trace.max_files must be positive")
+	if cfg.Channer.PtchanContext.MaxReplies <= 0 {
+		return Config{}, fmt.Errorf("channer.ptchan_context.max_replies must be positive")
 	}
-	if cfg.PtchanAssistant.Trace.Enabled && cfg.PtchanAssistant.Trace.Dir == "." {
-		return Config{}, fmt.Errorf("ptchan_assistant.trace.dir is required when enabled")
+	if cfg.Channer.Trace.MaxFiles <= 0 {
+		return Config{}, fmt.Errorf("channer.trace.max_files must be positive")
+	}
+	if cfg.Channer.Trace.Enabled && cfg.Channer.Trace.Dir == "." {
+		return Config{}, fmt.Errorf("channer.trace.dir is required when enabled")
 	}
 	if cfg.DeepSeek.Model == "" {
 		return Config{}, fmt.Errorf("deepseek.model is required")
@@ -474,11 +494,11 @@ func LoadConfig() (Config, error) {
 	if cfg.Gateway.Webhook.Path == "" {
 		return Config{}, fmt.Errorf("gateway.webhook.path is required")
 	}
-	if cfg.Gateway.Notifications.MinReplyPosts < 0 {
-		return Config{}, fmt.Errorf("gateway.notifications.min_reply_posts must be non-negative")
+	if cfg.ThreadNotifier.MinReplyPosts < 0 {
+		return Config{}, fmt.Errorf("threadnotifier.min_reply_posts must be non-negative")
 	}
-	if cfg.Streams.EndMissThreshold <= 0 {
-		return Config{}, fmt.Errorf("streams.end_miss_threshold must be positive")
+	if cfg.StreamNotifier.EndMissThreshold <= 0 {
+		return Config{}, fmt.Errorf("streamnotifier.end_miss_threshold must be positive")
 	}
 	if err := cfg.Runtime.Logging.Level.UnmarshalText([]byte(strings.TrimSpace(raw.Runtime.Logging.Level))); err != nil {
 		return Config{}, fmt.Errorf("runtime.logging.level must be debug, info, warn, or error")
@@ -487,61 +507,74 @@ func LoadConfig() (Config, error) {
 	if cfg.Runtime.Logging.Format != LogText && cfg.Runtime.Logging.Format != LogJSON {
 		return Config{}, fmt.Errorf("runtime.logging.format must be %q or %q", LogText, LogJSON)
 	}
-	seenComponents := make(map[ComponentName]struct{}, len(raw.Runtime.Components))
-	for _, value := range raw.Runtime.Components {
-		component := ComponentName(strings.TrimSpace(value))
-		switch component {
-		case componentGateway, componentStreams, componentTelegramAssistant, componentPtchanAssistant:
-		default:
-			return Config{}, fmt.Errorf("runtime.components contains unknown component %q", value)
-		}
-		if _, exists := seenComponents[component]; exists {
-			return Config{}, fmt.Errorf("runtime.components contains duplicate component %q", component)
-		}
-		seenComponents[component] = struct{}{}
-		cfg.Runtime.Components = append(cfg.Runtime.Components, component)
-	}
-	streamKeys := make(map[string]struct{}, len(raw.Streams.Channels))
-	for i, stream := range raw.Streams.Channels {
+	streamKeys := make(map[string]struct{}, len(raw.StreamNotifier.Channels))
+	for i, stream := range raw.StreamNotifier.Channels {
 		stream.Key = strings.TrimSpace(stream.Key)
 		stream.ProbeURL = strings.TrimSpace(stream.ProbeURL)
 		stream.PageURL = strings.TrimSpace(stream.PageURL)
 		if stream.Key == "" || stream.ProbeURL == "" || stream.PageURL == "" {
-			return Config{}, fmt.Errorf("streams.channel[%d] requires key, probe_url, and page_url", i)
+			return Config{}, fmt.Errorf("streamnotifier.channel[%d] requires key, probe_url, and page_url", i)
 		}
 		if _, exists := streamKeys[stream.Key]; exists {
-			return Config{}, fmt.Errorf("streams.channel key %q is duplicated", stream.Key)
+			return Config{}, fmt.Errorf("streamnotifier.channel key %q is duplicated", stream.Key)
 		}
 		streamKeys[stream.Key] = struct{}{}
-		cfg.Streams.Channels = append(cfg.Streams.Channels, miau.Channel(stream))
+		cfg.StreamNotifier.Channels = append(cfg.StreamNotifier.Channels, probe.Channel(stream))
 	}
 
-	if cfg.TelegramAssistant.ConversationTTL, err = positiveDuration("telegram_assistant.memory.ttl", raw.TelegramAssistant.Memory.TTL); err != nil {
+	if cfg.Chatter.ConversationTTL, err = positiveDuration("chatter.memory.ttl", raw.Chatter.Memory.TTL); err != nil {
 		return Config{}, err
 	}
-	if cfg.TelegramAssistant.RateLimitWindow, err = positiveDuration("telegram_assistant.rate_limit.window", raw.TelegramAssistant.RateLimit.Window); err != nil {
+	if cfg.Chatter.RateLimitWindow, err = positiveDuration("chatter.rate_limit.window", raw.Chatter.RateLimit.Window); err != nil {
 		return Config{}, err
 	}
-	if cfg.TelegramAssistant.PtchanContext.Timeout, err = positiveDuration("telegram_assistant.ptchan_context.timeout", telegramPtchanContext.Timeout); err != nil {
+	if cfg.Chatter.PtchanContext.Timeout, err = positiveDuration("chatter.ptchan_context.timeout", chatterPtchanContext.Timeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.PtchanAssistant.PtchanContext.Timeout, err = positiveDuration("ptchan_assistant.ptchan_context.timeout", ptchanContext.Timeout); err != nil {
+	if cfg.Channer.PtchanContext.Timeout, err = positiveDuration("channer.ptchan_context.timeout", ptchanContext.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.Channer.RateLimitWindow, err = positiveDuration("channer.rate_limit.window", raw.Channer.RateLimit.Window); err != nil {
 		return Config{}, err
 	}
 	if cfg.DeepSeek.Timeout, err = positiveDuration("deepseek.timeout", raw.DeepSeek.Timeout); err != nil {
 		return Config{}, err
 	}
-	if cfg.Streams.PollInterval, err = positiveDuration("streams.poll_interval", raw.Streams.PollInterval); err != nil {
+	if cfg.StreamNotifier.PollInterval, err = positiveDuration("streamnotifier.poll_interval", raw.StreamNotifier.PollInterval); err != nil {
 		return Config{}, err
 	}
-	if cfg.Gateway.Notifications.Filter.MaxThreadAge, err = nonNegativeDuration("gateway.notifications.max_thread_age", raw.Gateway.Notifications.MaxThreadAge); err != nil {
+	if cfg.ThreadNotifier.Filter.MaxThreadAge, err = nonNegativeDuration("threadnotifier.max_thread_age", raw.ThreadNotifier.MaxThreadAge); err != nil {
 		return Config{}, err
 	}
-	if cfg.Gateway.Notifications.PruneAfter, err = nonNegativeDuration("gateway.notifications.prune_after", raw.Gateway.Notifications.PruneAfter); err != nil {
+	if cfg.ThreadNotifier.PruneAfter, err = nonNegativeDuration("threadnotifier.prune_after", raw.ThreadNotifier.PruneAfter); err != nil {
 		return Config{}, err
 	}
-	if cfg.Storage.SQLitePath == "." {
+	if cfg.Storage.SQLitePath == "" || cfg.Storage.SQLitePath == "." {
 		return Config{}, fmt.Errorf("storage.sqlite_path is required")
+	}
+	if cfg.ChatterStorage.SQLitePath == "." {
+		return Config{}, fmt.Errorf("storage.chatter.sqlite_path is required when set")
+	}
+	if cfg.ChannerStorage.SQLitePath == "." {
+		return Config{}, fmt.Errorf("storage.channer.sqlite_path is required when set")
+	}
+	if cfg.ThreadNotifierStorage.SQLitePath == "." {
+		return Config{}, fmt.Errorf("storage.threadnotifier.sqlite_path is required when set")
+	}
+	if cfg.StreamNotifierStorage.SQLitePath == "." {
+		return Config{}, fmt.Errorf("storage.streamnotifier.sqlite_path is required when set")
+	}
+	if cfg.ChatterStorage.SQLitePath == "" {
+		cfg.ChatterStorage = cfg.Storage
+	}
+	if cfg.ChannerStorage.SQLitePath == "" {
+		cfg.ChannerStorage = cfg.Storage
+	}
+	if cfg.ThreadNotifierStorage.SQLitePath == "" {
+		cfg.ThreadNotifierStorage = cfg.Storage
+	}
+	if cfg.StreamNotifierStorage.SQLitePath == "" {
+		cfg.StreamNotifierStorage = cfg.Storage
 	}
 
 	return cfg, nil
@@ -588,66 +621,121 @@ type assistantTraceFileConfig struct {
 	MaxFiles int
 }
 
-func (c Config) runs(component ComponentName) bool {
-	for _, configured := range c.Runtime.Components {
-		if configured == component {
-			return true
-		}
+func (c Config) ForApp(app AppName) (Config, error) {
+	switch app {
+	case AppChatter:
+		c.App = app
+		c.Ptchan = c.ChatterPtchan
+		c.Storage = c.ChatterStorage
+		return c, nil
+	case AppChanner:
+		c.App = app
+		c.Ptchan = c.ChannerPtchan
+		c.Storage = c.ChannerStorage
+		return c, nil
+	case AppThreadNotifier:
+		c.App = app
+		c.Ptchan = c.ThreadNotifierPtchan
+		c.Storage = c.ThreadNotifierStorage
+		return c, nil
+	case AppStreamNotifier:
+		c.App = app
+		c.Storage = c.StreamNotifierStorage
+		return c, nil
+	default:
+		return Config{}, fmt.Errorf("unknown app %q", app)
 	}
-	return false
 }
 
 func (c Config) ValidateRun() error {
-	if len(c.Runtime.Components) == 0 {
-		return fmt.Errorf("runtime.components must contain at least one component")
+	if c.App == "" {
+		return fmt.Errorf("app command is required")
 	}
-	if (c.runs(componentGateway) || c.runs(componentStreams) || c.runs(componentTelegramAssistant)) && c.Telegram.BotToken == "" {
+	if (c.App == AppThreadNotifier || c.App == AppStreamNotifier || c.App == AppChatter) && c.Telegram.BotToken == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
 	}
-	if (c.runs(componentGateway) || c.runs(componentStreams)) && c.Telegram.NotificationChatID == 0 {
-		return fmt.Errorf("telegram.notification_chat_id is required for gateway and streams")
+	if (c.App == AppThreadNotifier || c.App == AppStreamNotifier) && c.Telegram.NotificationChatID == 0 {
+		return fmt.Errorf("telegram.notification_chat_id is required for threadnotifier and streamnotifier")
 	}
-	if c.runs(componentStreams) && len(c.Streams.Channels) == 0 {
-		return fmt.Errorf("streams requires at least one channel")
+	if c.App == AppStreamNotifier && len(c.StreamNotifier.Channels) == 0 {
+		return fmt.Errorf("streamnotifier requires at least one channel")
 	}
-	if c.runs(componentGateway) && c.Ptchan.Secret == "" {
-		return fmt.Errorf("%s is required for gateway", integrationSecretEnv(c.Ptchan.IntegrationName))
+	if c.App == AppThreadNotifier && c.Ptchan.Secret == "" {
+		return fmt.Errorf("%s is required for threadnotifier", integrationSecretEnv(c.Ptchan.IntegrationName))
 	}
-	if c.runs(componentTelegramAssistant) {
-		if c.TelegramAssistant.Name == "" {
-			return fmt.Errorf("name is required for telegram_assistant")
+	if c.App == AppChatter {
+		if c.Chatter.Name == "" {
+			return fmt.Errorf("name is required for chatter")
 		}
-		if c.TelegramAssistant.SystemPrompt == "" {
-			return fmt.Errorf("telegram_assistant.system_prompt is required for telegram_assistant")
+		if c.Chatter.SystemPrompt == "" {
+			return fmt.Errorf("chatter.system_prompt is required for chatter")
 		}
-		if c.TelegramAssistant.DiscussionChatID == 0 {
-			return fmt.Errorf("telegram.discussion_chat_id is required for telegram_assistant")
+		if c.Chatter.DiscussionChatID == 0 {
+			return fmt.Errorf("telegram.discussion_chat_id is required for chatter")
 		}
-		if !c.TelegramAssistant.AllowAllUsers && len(c.TelegramAssistant.AllowedUserIDs) == 0 {
-			return fmt.Errorf("telegram.allowed_user_ids requires at least one user for telegram_assistant")
+		if !c.Chatter.AllowAllUsers && len(c.Chatter.AllowedUserIDs) == 0 {
+			return fmt.Errorf("telegram.allowed_user_ids requires at least one user for chatter")
 		}
 		if c.DeepSeek.APIKey == "" {
-			return fmt.Errorf("DEEPSEEK_API_KEY is required for telegram_assistant")
+			return fmt.Errorf("DEEPSEEK_API_KEY is required for chatter")
 		}
-		if c.TelegramAssistant.PtchanContext.Enabled && c.Ptchan.Secret == "" {
-			return fmt.Errorf("%s is required for telegram_assistant ptchan context", integrationSecretEnv(c.Ptchan.IntegrationName))
+		if c.Chatter.PtchanContext.Enabled && c.Ptchan.Secret == "" {
+			return fmt.Errorf("%s is required for chatter ptchan context", integrationSecretEnv(c.Ptchan.IntegrationName))
 		}
 	}
-	if c.runs(componentPtchanAssistant) {
-		if c.PtchanAssistant.Name == "" {
-			return fmt.Errorf("name is required for ptchan_assistant")
+	if c.App == AppChanner {
+		if c.Channer.Name == "" {
+			return fmt.Errorf("name is required for channer")
 		}
-		if c.PtchanAssistant.SystemPrompt == "" {
-			return fmt.Errorf("ptchan_assistant.system_prompt is required for ptchan_assistant")
+		if c.Channer.SystemPrompt == "" {
+			return fmt.Errorf("channer.system_prompt is required for channer")
 		}
 		if c.DeepSeek.APIKey == "" {
-			return fmt.Errorf("DEEPSEEK_API_KEY is required for ptchan_assistant")
+			return fmt.Errorf("DEEPSEEK_API_KEY is required for channer")
 		}
 		if c.Ptchan.Secret == "" {
-			return fmt.Errorf("%s is required for ptchan_assistant", integrationSecretEnv(c.Ptchan.IntegrationName))
+			return fmt.Errorf("%s is required for channer", integrationSecretEnv(c.Ptchan.IntegrationName))
 		}
 	}
 	return nil
+}
+
+func ParseAppName(value string) (AppName, error) {
+	switch AppName(strings.TrimSpace(value)) {
+	case AppChatter:
+		return AppChatter, nil
+	case AppChanner:
+		return AppChanner, nil
+	case AppThreadNotifier:
+		return AppThreadNotifier, nil
+	case AppStreamNotifier:
+		return AppStreamNotifier, nil
+	default:
+		return "", fmt.Errorf("unknown app %q", value)
+	}
+}
+
+func ptchanIntegrationConfig(base PtchanConfig, raw filePtchanIntegrationConfig) PtchanConfig {
+	name := strings.TrimSpace(raw.IntegrationName)
+	if name == "" {
+		return base
+	}
+	cfg := base
+	cfg.IntegrationName = name
+	cfg.Secret = strings.TrimSpace(os.Getenv(integrationSecretEnv(name)))
+	return cfg
+}
+
+func appStorageConfig(raw fileAppStorageConfig) StorageConfig {
+	return StorageConfig{SQLitePath: cleanPath(raw.SQLitePath)}
+}
+
+func cleanPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
 }
 
 func integrationSecretEnv(name string) string {
@@ -687,6 +775,23 @@ func cleanMentions(values []string) []string {
 		mentions = append(mentions, mention)
 	}
 	return mentions
+}
+
+func cleanTripcodes(values []string) []string {
+	tripcodes := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		tripcode := strings.TrimSpace(value)
+		if tripcode == "" {
+			continue
+		}
+		if _, ok := seen[tripcode]; ok {
+			continue
+		}
+		seen[tripcode] = struct{}{}
+		tripcodes = append(tripcodes, tripcode)
+	}
+	return tripcodes
 }
 
 func positiveDuration(name, value string) (time.Duration, error) {

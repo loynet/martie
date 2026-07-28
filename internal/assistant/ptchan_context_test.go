@@ -84,7 +84,7 @@ func TestFormatPtchanContextOmitsWholePostsAtRuneLimit(t *testing.T) {
 		},
 	}
 
-	got := FormatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 2}, 2300)
+	got := FormatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 2}, 2600)
 
 	for _, want := range []string{
 		"Context window: 2 rendered posts from 3 selected posts and 3 gateway posts",
@@ -120,6 +120,29 @@ func TestFormatPtchanContextReportsTruncatedPostBodies(t *testing.T) {
 	got := FormatPtchanContextWithLimit(thread, 0, PtchanContextConfig{MaxReplies: 1}, 4000)
 	if !strings.Contains(got, "Post bodies truncated: true") {
 		t.Fatalf("context did not report truncated post body:\n%s", got)
+	}
+}
+
+func TestFormatPtchanContextLabelsMartieTripcodePosts(t *testing.T) {
+	thread := gateway.Thread{
+		Board:    "i",
+		ThreadID: 100,
+		Posts: []gateway.Post{
+			{Board: "i", ThreadID: 100, PostID: 100, Message: "op"},
+			{Board: "i", ThreadID: 100, PostID: 101, Name: "Martie", Tripcode: "!martie", Message: "previous answer"},
+			{Board: "i", ThreadID: 100, PostID: 102, Message: "@martie follow up"},
+		},
+	}
+
+	got := FormatPtchanContextWithLimit(thread, 102, PtchanContextConfig{MaxReplies: 3, SelfTripcodes: []string{"!martie"}}, 4000)
+	for _, want := range []string{
+		"[101 | SELF]",
+		"Posts labeled SELF are your previous public assistant output, not a new user request.",
+		"Treat SELF-labeled posts as your prior assistant output; do not answer them as if they are the current user request.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("context missing %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -165,7 +188,7 @@ func TestFirstPtchanThreadLinkIgnoresOtherHosts(t *testing.T) {
 }
 
 func TestThreadLinkForRequestFallsBackToReplyText(t *testing.T) {
-	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
+	link, ok := ptchanThreadLinkForRequest(PtchanContextRequest{
 		Text:      "what is going on here?",
 		ReplyText: "thread: https://ptchan.org/i/thread/303160.html#303241",
 	}, "https://ptchan.org")
@@ -181,7 +204,7 @@ func TestThreadLinkForRequestFallsBackToReplyText(t *testing.T) {
 }
 
 func TestThreadLinkForRequestUsesCurrentQuoteAsFocus(t *testing.T) {
-	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
+	link, ok := ptchanThreadLinkForRequest(PtchanContextRequest{
 		Text: "what is going on with >>303241? https://ptchan.org/i/thread/303160.html#303200",
 	}, "https://ptchan.org")
 	if !ok {
@@ -193,7 +216,7 @@ func TestThreadLinkForRequestUsesCurrentQuoteAsFocus(t *testing.T) {
 }
 
 func TestThreadLinkForRequestUsesCurrentQuoteWithReplyThreadLink(t *testing.T) {
-	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
+	link, ok := ptchanThreadLinkForRequest(PtchanContextRequest{
 		Text:      "what is happening at >>303923?",
 		ReplyText: "thread https://ptchan.org/i/thread/303822.html",
 	}, "https://ptchan.org")
@@ -206,7 +229,7 @@ func TestThreadLinkForRequestUsesCurrentQuoteWithReplyThreadLink(t *testing.T) {
 }
 
 func TestThreadLinkForRequestUsesCurrentURLFragmentAsFocus(t *testing.T) {
-	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
+	link, ok := ptchanThreadLinkForRequest(PtchanContextRequest{
 		Text: "https://ptchan.org/i/thread/303822.html#303923",
 	}, "https://ptchan.org")
 	if !ok {
@@ -218,7 +241,7 @@ func TestThreadLinkForRequestUsesCurrentURLFragmentAsFocus(t *testing.T) {
 }
 
 func TestThreadLinkForRequestPrefersCurrentText(t *testing.T) {
-	link, ok := PtchanThreadLinkForRequest(PtchanContextRequest{
+	link, ok := ptchanThreadLinkForRequest(PtchanContextRequest{
 		Text:      "new link https://ptchan.org/i/thread/200.html",
 		ReplyText: "old link https://ptchan.org/i/thread/100.html",
 	}, "https://ptchan.org")
@@ -292,29 +315,29 @@ type fakePtchanFetcher struct {
 	threadIDs []int64
 }
 
-func (f *fakePtchanFetcher) ReadThread(_ context.Context, board string, threadID int64) (gateway.Thread, error) {
+func (f *fakePtchanFetcher) ReadThread(_ context.Context, ref gateway.ThreadRef, _ int) (*gateway.Thread, error) {
 	f.calls++
-	f.threadIDs = append(f.threadIDs, threadID)
+	f.threadIDs = append(f.threadIDs, ref.ThreadID)
 	if f.err != nil {
-		return gateway.Thread{}, f.err
+		return nil, f.err
 	}
 	thread := f.thread
 	if thread.Board == "" {
-		thread.Board = board
+		thread.Board = ref.Board
 	}
 	if thread.ThreadID == 0 {
-		thread.ThreadID = threadID
+		thread.ThreadID = ref.ThreadID
 	}
 	for i := range thread.Posts {
 		if thread.Posts[i].Board == "" {
-			thread.Posts[i].Board = board
+			thread.Posts[i].Board = ref.Board
 		}
 		if thread.Posts[i].ThreadID == 0 {
-			thread.Posts[i].ThreadID = threadID
+			thread.Posts[i].ThreadID = ref.ThreadID
 		}
 		if thread.Posts[i].PostID == 0 {
-			thread.Posts[i].PostID = threadID
+			thread.Posts[i].PostID = ref.ThreadID
 		}
 	}
-	return thread, nil
+	return &thread, nil
 }
