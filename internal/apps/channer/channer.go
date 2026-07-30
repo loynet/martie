@@ -5,12 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"golang.org/x/time/rate"
 
 	channerstate "martie/internal/apps/channer/state"
 	"martie/internal/assistant"
@@ -21,22 +18,34 @@ import (
 const (
 	maxChannerReplyRunes = 3000
 	maxChannerReplyBytes = 7800
+	finalizeTimeout      = 5 * time.Second
 
 	Surface       = "channer"
 	ResultSuccess = "success"
 	ResultError   = "error"
+
+	outcomePosted             = "posted"
+	outcomeGlobalRateLimited  = "local_global_rate_limited"
+	outcomeThreadRateLimited  = "local_thread_rate_limited"
+	outcomeGatewayRateLimited = "gateway_rate_limited"
+	outcomeCompletionError    = "completion_error"
+	outcomeCompletionRejected = "completion_rejected"
+	outcomePostingRejected    = "posting_rejected"
+	outcomePostingUnknown     = "posting_unknown"
+	outcomeNotConfigured      = "not_configured"
 )
 
 type Config struct {
-	Name            string
-	Mentions        []string
-	SystemPrompt    string
-	MaxInputRunes   int
-	RateLimitWindow time.Duration
-	RequestLimit    int
-	RequestBurst    int
-	PtchanContext   assistant.PtchanContextConfig
-	Trace           assistant.TraceConfig
+	Name               string
+	Mentions           []string
+	SystemPrompt       string
+	MaxInputRunes      int
+	RequestLimit       int
+	RequestBurst       int
+	ThreadRequestLimit int
+	ThreadRequestBurst int
+	PruneAfter         time.Duration
+	PtchanContext      assistant.PtchanContextConfig
 }
 
 type Responder struct {
@@ -46,8 +55,7 @@ type Responder struct {
 	ModelName string
 	Ptchan    *assistant.PtchanContext
 	Poster    Poster
-	Traces    *assistant.TraceDumper
-	Limit     *rate.Limiter
+	Limit     *Limiter
 	Logger    *slog.Logger
 	Metrics   Metrics
 	nowFunc   func() time.Time
@@ -58,10 +66,10 @@ type Store interface {
 	GetEvent(context.Context, string) (channerstate.Event, bool, error)
 	ClaimEvent(context.Context, string, time.Time) (bool, error)
 	MarkEventPosting(context.Context, string, time.Time) error
-	MarkEventPosted(context.Context, string, channerstate.Reply, time.Time) error
-	PostedReplyExists(context.Context, string, int64, int64) (bool, error)
+	MarkEventPosted(context.Context, string, time.Time) error
 	MarkEventFailed(context.Context, string, string, string, time.Time) error
 	MarkEventUnknown(context.Context, string, string, string, time.Time) error
+	PruneBefore(context.Context, time.Time) (int64, error)
 }
 
 type Completer interface {
@@ -76,6 +84,7 @@ type Metrics interface {
 	ObserveAssistantAdmission(surface, result string)
 	ObserveAssistantReply(surface, result string)
 	ObserveAssistantContext(surface, contextType string)
+	ObserveChannerOutcome(outcome string)
 	ObserveModelCompletion(surface, provider, model string, duration time.Duration, completion deepseek.Completion, err error)
 }
 
@@ -90,7 +99,6 @@ const (
 	admissionTooLong     admissionResult = "too_long"
 	admissionDuplicate   admissionResult = "duplicate"
 	admissionRateLimited admissionResult = "rate_limited"
-	admissionReplyToBot  admissionResult = "reply_to_bot"
 )
 
 type request struct {
@@ -107,8 +115,22 @@ func (a *Responder) SetNowFunc(nowFunc func() time.Time) {
 
 func (a Responder) Run(ctx context.Context) error {
 	a.Logger.Info("channer active", "mentions", a.Config.Mentions)
-	<-ctx.Done()
-	return nil
+	if a.Config.PruneAfter == 0 {
+		<-ctx.Done()
+		return nil
+	}
+
+	a.prune(ctx)
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			a.prune(ctx)
+		}
+	}
 }
 
 func (a Responder) ConsumeGatewayEvent(ctx context.Context, event gateway.WebhookEvent) error {
@@ -116,22 +138,10 @@ func (a Responder) ConsumeGatewayEvent(ctx context.Context, event gateway.Webhoo
 	if result == admissionAccepted && a.Store == nil {
 		return fmt.Errorf("channer store is not configured")
 	}
-	if result == admissionAccepted {
-		// TODO: Prefer referenced-post public identity from ptchan-gateway when
-		// webhook events include it; this ledger check is only local loop
-		// protection.
-		replyToBot, err := a.referencesPostedReply(ctx, event.Post)
-		if err != nil {
-			return err
-		}
-		if replyToBot {
-			result = admissionReplyToBot
-		}
-	}
-	if a.Metrics != nil {
-		a.Metrics.ObserveAssistantAdmission(Surface, string(result))
-	}
 	if result != admissionAccepted {
+		if a.Metrics != nil {
+			a.Metrics.ObserveAssistantAdmission(Surface, string(result))
+		}
 		a.Logger.Debug("channer event ignored", "event_id", event.EventID, "reason", result)
 		return nil
 	}
@@ -150,6 +160,9 @@ func (a Responder) ConsumeGatewayEvent(ctx context.Context, event gateway.Webhoo
 	}
 	if !created {
 		return a.consumeExisting(ctx, event)
+	}
+	if a.Metrics != nil {
+		a.Metrics.ObserveAssistantAdmission(Surface, string(admissionAccepted))
 	}
 
 	a.Logger.Info("channer mention admitted", "event_id", request.EventID, "board", request.Thread.Board, "thread_id", request.Thread.ThreadID, "post_id", request.PostID, "mention", request.Mention)
@@ -180,7 +193,9 @@ func (a Responder) now() time.Time {
 
 func (a Responder) handle(ctx context.Context, request request) error {
 	startedAt := a.now().UTC()
-	claimed, err := a.Store.ClaimEvent(ctx, request.EventID, startedAt)
+	finalizeCtx, cancel := finalizationContext(ctx)
+	claimed, err := a.Store.ClaimEvent(finalizeCtx, request.EventID, startedAt)
+	cancel()
 	if err != nil {
 		return err
 	}
@@ -191,16 +206,19 @@ func (a Responder) handle(ctx context.Context, request request) error {
 	if a.Completer == nil || a.Poster == nil {
 		return a.markFailed(ctx, request.EventID, "not_configured", "channer completion or posting is not configured")
 	}
-	if a.Limit != nil && !a.Limit.Allow() {
-		return a.markFailed(ctx, request.EventID, "rate_limited", "channer rate limit exceeded")
+	if a.Limit != nil {
+		switch a.Limit.allow(request.Thread, startedAt) {
+		case limitGlobal:
+			return a.markFailed(ctx, request.EventID, outcomeGlobalRateLimited, "channer global rate limit exceeded")
+		case limitThread:
+			return a.markFailed(ctx, request.EventID, outcomeThreadRateLimited, "channer thread rate limit exceeded")
+		}
 	}
 
 	var contextText string
-	usedPtchanContext := false
 	if a.Ptchan != nil {
 		if text, ok := a.Ptchan.ForPost(ctx, request.Thread, request.PostID); ok {
 			contextText = text
-			usedPtchanContext = true
 			if a.Metrics != nil {
 				a.Metrics.ObserveAssistantContext(Surface, "ptchan")
 			}
@@ -208,40 +226,26 @@ func (a Responder) handle(ctx context.Context, request request) error {
 	}
 
 	messages := []deepseek.Message{{Role: deepseek.RoleUser, Content: formatChannerRequest(request, contextText)}}
-	trace := &assistant.Trace{
-		Surface:       Surface,
-		StartedAt:     startedAt,
-		MessageID:     request.PostID,
-		ThreadID:      request.Thread.ThreadID,
-		UserAlias:     "ptchan",
-		UsedPtchan:    usedPtchanContext,
-		SystemPrompt:  a.Config.SystemPrompt,
-		ModelMessages: append([]deepseek.Message(nil), messages...),
-	}
-	defer func() { a.dumpTrace(trace) }()
 
+	completionStarted := time.Now()
 	completion, err := a.Completer.Complete(ctx, a.Config.SystemPrompt, messages)
-	trace.Completion = completion
 	if a.Metrics != nil {
-		a.Metrics.ObserveModelCompletion(Surface, "deepseek", a.ModelName, time.Since(startedAt), completion, err)
+		a.Metrics.ObserveModelCompletion(Surface, "deepseek", a.ModelName, time.Since(completionStarted), completion, err)
 	}
 	if err != nil {
-		trace.Outcome = "completion error"
-		trace.Err = err
 		return a.markFailed(ctx, request.EventID, "completion_error", err.Error())
 	}
 
 	text, ok := ptchanCompletionText(completion)
 	if !ok {
 		err := fmt.Errorf("completion finish reason %q is not postable", completion.FinishReason)
-		trace.Outcome = "completion rejected"
-		trace.Err = err
 		return a.markFailed(ctx, request.EventID, "completion_rejected", err.Error())
 	}
-	replyText := formatChannerReply(text)
-	if err := a.Store.MarkEventPosting(ctx, request.EventID, a.now().UTC()); err != nil {
-		trace.Outcome = "posting state error"
-		trace.Err = err
+	replyText := formatChannerReply(request.PostID, text)
+	finalizeCtx, cancel = finalizationContext(ctx)
+	err = a.Store.MarkEventPosting(finalizeCtx, request.EventID, a.now().UTC())
+	cancel()
+	if err != nil {
 		return err
 	}
 	reply, err := a.Poster.PostReply(ctx, request.Thread, replyText, false)
@@ -249,50 +253,96 @@ func (a Responder) handle(ctx context.Context, request request) error {
 		if a.Metrics != nil {
 			a.Metrics.ObserveAssistantReply(Surface, ResultError)
 		}
-		trace.Outcome = "posting error"
-		trace.Err = err
 		postingErr, structured := postingError(err)
 		if !structured {
-			if markErr := a.Store.MarkEventUnknown(ctx, request.EventID, "posting_state_unknown", err.Error(), a.now().UTC()); markErr != nil {
+			if markErr := a.markUnknown(ctx, request.EventID, "posting_state_unknown", err.Error()); markErr != nil {
 				return joinErrors(err, markErr)
 			}
 			return nil
 		}
 		if postingErr.Code == "reply_state_unknown" {
-			if markErr := a.Store.MarkEventUnknown(ctx, request.EventID, postingErr.Code, postingErr.Message, a.now().UTC()); markErr != nil {
+			if markErr := a.markUnknown(ctx, request.EventID, postingErr.Code, postingErr.Message); markErr != nil {
 				return joinErrors(err, markErr)
 			}
 			return nil
 		}
 		return a.markFailed(ctx, request.EventID, postingFailure(postingErr), err.Error())
 	}
-	if err := a.Store.MarkEventPosted(ctx, request.EventID, channerstate.Reply{Board: reply.Board, ThreadID: reply.ThreadID, PostID: reply.PostID}, a.now().UTC()); err != nil {
-		trace.Outcome = "posted but state update failed"
-		trace.Err = err
-		return err
+	finalizeCtx, cancel = finalizationContext(ctx)
+	err = a.Store.MarkEventPosted(finalizeCtx, request.EventID, a.now().UTC())
+	cancel()
+	if err != nil {
+		if markErr := a.markUnknown(ctx, request.EventID, "posted_state_update_failed", err.Error()); markErr != nil {
+			return joinErrors(err, markErr)
+		}
+		if a.Metrics != nil {
+			a.Metrics.ObserveAssistantReply(Surface, ResultSuccess)
+		}
+		return nil
 	}
-	trace.Outcome = "posted"
 	if a.Metrics != nil {
 		a.Metrics.ObserveAssistantReply(Surface, ResultSuccess)
+		a.Metrics.ObserveChannerOutcome(outcomePosted)
 	}
 	a.Logger.Info("channer replied", "event_id", request.EventID, "board", reply.Board, "thread_id", reply.ThreadID, "post_id", reply.PostID)
 	return nil
 }
 
 func (a Responder) markFailed(ctx context.Context, eventID, code, message string) error {
-	return a.Store.MarkEventFailed(ctx, eventID, code, message, a.now().UTC())
+	finalizeCtx, cancel := finalizationContext(ctx)
+	defer cancel()
+	if err := a.Store.MarkEventFailed(finalizeCtx, eventID, code, message, a.now().UTC()); err != nil {
+		return err
+	}
+	if a.Metrics != nil {
+		a.Metrics.ObserveChannerOutcome(failureOutcome(code))
+	}
+	return nil
 }
 
-func (a Responder) dumpTrace(trace *assistant.Trace) {
-	if a.Traces == nil {
-		return
+func (a Responder) markUnknown(ctx context.Context, eventID, code, message string) error {
+	finalizeCtx, cancel := finalizationContext(ctx)
+	defer cancel()
+	if err := a.Store.MarkEventUnknown(finalizeCtx, eventID, code, message, a.now().UTC()); err != nil {
+		return err
 	}
-	path, err := a.Traces.Dump(trace)
+	if a.Metrics != nil {
+		a.Metrics.ObserveChannerOutcome(outcomePostingUnknown)
+	}
+	return nil
+}
+
+func failureOutcome(code string) string {
+	switch code {
+	case outcomeGlobalRateLimited, outcomeThreadRateLimited:
+		return code
+	case "rate_limited":
+		return outcomeGatewayRateLimited
+	case "completion_error":
+		return outcomeCompletionError
+	case "completion_rejected":
+		return outcomeCompletionRejected
+	case "not_configured":
+		return outcomeNotConfigured
+	default:
+		return outcomePostingRejected
+	}
+}
+
+func finalizationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
+}
+
+func (a Responder) prune(ctx context.Context) {
+	cutoff := a.now().UTC().Add(-a.Config.PruneAfter)
+	count, err := a.Store.PruneBefore(ctx, cutoff)
 	if err != nil {
-		a.Logger.Warn("channer trace dump failed", "event_id", trace.MessageID, "thread_id", trace.ThreadID, "error", err)
+		a.Logger.Warn("channer event prune failed", "error", err)
 		return
 	}
-	a.Logger.Info("channer trace dumped", "trace_id", filepath.Base(path), "post_id", trace.MessageID, "thread_id", trace.ThreadID, "path", path)
+	if count > 0 {
+		a.Logger.Info("channer events pruned", "count", count, "cutoff", cutoff.Format(time.RFC3339))
+	}
 }
 
 func formatChannerRequest(request request, contextText string) string {
@@ -308,7 +358,8 @@ func formatChannerRequest(request request, contextText string) string {
 	b.WriteString("Post text after removing the configured mention:\n")
 	assistant.WriteFencedBlock(&b, "ptchan-request", request.Text)
 	b.WriteString("\n\nReply publicly to the current post. Start from the provided context, not hidden assumptions.")
-	b.WriteString("\nUse natural chan style. Say OP when you mean the opening post or original poster. Reference posts as >>123 without Markdown, full URLs, or a blank line before the answer.")
+	fmt.Fprintf(&b, "\nThe posting layer automatically prefixes your answer with >>%d. Do not add a leading reference to the current post yourself.", request.PostID)
+	b.WriteString("\nUse natural chan style. Say OP when you mean the opening post or original poster. Use >>123 only when referring to a different post, without Markdown or full URLs.")
 	return b.String()
 }
 
@@ -323,24 +374,12 @@ func ptchanCompletionText(completion deepseek.Completion) (string, bool) {
 	}
 }
 
-func formatChannerReply(text string) string {
+func formatChannerReply(postID int64, text string) string {
 	text = strings.TrimSpace(text)
-	text = sanitizePtchanReplyText(text)
+	text = assistant.StripUnsafeControls(text)
 	text = assistant.TruncateRunes(text, maxChannerReplyRunes)
-	return truncatePtchanReplyBytes(text, maxChannerReplyBytes)
-}
-
-func sanitizePtchanReplyText(text string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' || !isControlRune(r) {
-			return r
-		}
-		return -1
-	}, text)
-}
-
-func isControlRune(r rune) bool {
-	return r >= 0 && r < 0x20 || r == 0x7f
+	prefix := fmt.Sprintf(">>%d\n", postID)
+	return prefix + truncatePtchanReplyBytes(text, maxChannerReplyBytes-len(prefix))
 }
 
 func truncatePtchanReplyBytes(text string, limit int) string {
@@ -399,10 +438,10 @@ func (a Responder) admit(event gateway.WebhookEvent) (*request, admissionResult)
 	if event.Kind != gateway.PostCreated {
 		return nil, admissionUnsupported
 	}
-	if isIntegrationPost(event.Post) || assistant.IsSelfTripcode(event.Post.Tripcode, a.Config.PtchanContext.SelfTripcodes) {
+	if isIntegrationPost(event.Post) {
 		return nil, admissionBot
 	}
-	text := strings.TrimSpace(event.Post.Message)
+	text := strings.TrimSpace(assistant.StripUnsafeControls(event.Post.Message))
 	if text == "" {
 		return nil, admissionEmpty
 	}
@@ -422,24 +461,8 @@ func (a Responder) admit(event gateway.WebhookEvent) (*request, admissionResult)
 	}, admissionAccepted
 }
 
-func (a Responder) referencesPostedReply(ctx context.Context, post gateway.Post) (bool, error) {
-	for _, ref := range post.References {
-		if ref.Board == "" || ref.ThreadID <= 0 || ref.PostID <= 0 {
-			continue
-		}
-		found, err := a.Store.PostedReplyExists(ctx, ref.Board, ref.ThreadID, ref.PostID)
-		if err != nil {
-			return false, err
-		}
-		if found {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func isIntegrationPost(post gateway.Post) bool {
-	return post.Origin != nil && post.Origin.Kind == "integration"
+	return post.Origin != nil && post.Origin.Kind == gateway.IntegrationOrigin
 }
 
 func firstConfiguredMention(text string, mentions []string) (string, int, bool) {
@@ -449,11 +472,6 @@ func firstConfiguredMention(text string, mentions []string) (string, int, bool) 
 		}
 	}
 	return "", 0, false
-}
-
-func containsMention(text, mention string) bool {
-	_, ok := mentionIndex(text, mention)
-	return ok
 }
 
 func mentionIndex(text, mention string) (int, bool) {

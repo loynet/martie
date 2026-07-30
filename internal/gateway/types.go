@@ -8,7 +8,6 @@ import (
 
 const (
 	headerIntegration = "x-ptchan-integration"
-	headerEventID     = "x-ptchan-event-id"
 	headerTimestamp   = "x-ptchan-timestamp"
 	headerSignature   = "x-ptchan-signature"
 )
@@ -19,6 +18,10 @@ const (
 	ThreadCreated EventKind = "thread.created"
 	PostCreated   EventKind = "post.created"
 )
+
+type SchemaVersion string
+
+const SchemaV1 SchemaVersion = "1"
 
 type Credentials struct {
 	Name   string
@@ -35,11 +38,12 @@ func (r ThreadRef) path() string {
 }
 
 type WebhookEvent struct {
-	EventID    string    `json:"event_id"`
-	Kind       EventKind `json:"kind"`
-	Source     string    `json:"source"`
-	ObservedAt time.Time `json:"observed_at"`
-	Post       Post      `json:"post"`
+	SchemaVersion SchemaVersion `json:"schema_version"`
+	EventID       string        `json:"event_id"`
+	Kind          EventKind     `json:"kind"`
+	Source        string        `json:"source"`
+	ObservedAt    time.Time     `json:"observed_at"`
+	Post          Post          `json:"post"`
 }
 
 type ReplyResponse struct {
@@ -48,10 +52,6 @@ type ReplyResponse struct {
 	PostID   int64      `json:"post_id"`
 	URL      string     `json:"url"`
 	Origin   PostOrigin `json:"origin"`
-}
-
-func (r ReplyResponse) ThreadRef() ThreadRef {
-	return ThreadRef{Board: r.Board, ThreadID: r.ThreadID}
 }
 
 type Thread struct {
@@ -90,9 +90,13 @@ func (p Post) ThreadRef() ThreadRef {
 }
 
 type PostOrigin struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Kind OriginKind `json:"kind"`
+	Name string     `json:"name"`
 }
+
+type OriginKind string
+
+const IntegrationOrigin OriginKind = "integration"
 
 type PostRef struct {
 	Board    string `json:"board"`

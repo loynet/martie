@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,7 +13,10 @@ import (
 	"martie/internal/gateway"
 )
 
-const maxGatewayEventBytes = 1 << 20
+const (
+	gatewayWebhookPath   = "/internal/ptchan/events"
+	maxGatewayEventBytes = 1 << 20
+)
 
 type gatewayEventConsumer interface {
 	ConsumeGatewayEvent(context.Context, gateway.WebhookEvent) error
@@ -24,7 +28,7 @@ type gatewayEventTarget struct {
 }
 
 type gatewayEventServer struct {
-	cfg       GatewayWebhookConfig
+	addr      string
 	ptchan    PtchanConfig
 	consumers []gatewayEventTarget
 	logger    *slog.Logger
@@ -34,9 +38,11 @@ type gatewayEventServer struct {
 
 func (s gatewayEventServer) run(ctx context.Context) error {
 	mux := http.NewServeMux()
-	mux.HandleFunc(s.cfg.Path, s.handleEvent)
+	mux.HandleFunc(gatewayWebhookPath, func(w http.ResponseWriter, r *http.Request) {
+		s.handleEvent(ctx, w, r)
+	})
 
-	listener, err := net.Listen("tcp", s.cfg.Addr)
+	listener, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("listen for gateway events: %w", err)
 	}
@@ -52,7 +58,7 @@ func (s gatewayEventServer) run(ctx context.Context) error {
 		}
 	}()
 
-	s.logger.Info("gateway event server listening", "address", listener.Addr().String(), "path", s.cfg.Path, "consumers", len(s.consumers))
+	s.logger.Info("gateway event server listening", "address", listener.Addr().String(), "path", gatewayWebhookPath, "consumers", len(s.consumers))
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -66,7 +72,7 @@ func (s gatewayEventServer) run(ctx context.Context) error {
 	}
 }
 
-func (s gatewayEventServer) handleEvent(w http.ResponseWriter, r *http.Request) {
+func (s gatewayEventServer) handleEvent(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.metrics.observeGatewayWebhook("method_not_allowed")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -90,13 +96,18 @@ func (s gatewayEventServer) handleEvent(w http.ResponseWriter, r *http.Request) 
 	event, err := gateway.VerifyWebhookBody(s.ptchan.Secret, eventID, timestamp, signature, body, s.nowFunc())
 	if err != nil {
 		s.logger.Warn("gateway webhook rejected", "error", err)
-		s.metrics.observeGatewayWebhook("unauthorized")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if errors.Is(err, gateway.ErrWebhookAuthentication) {
+			s.metrics.observeGatewayWebhook("unauthorized")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.metrics.observeGatewayWebhook("invalid_event")
+		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
 	for _, target := range s.consumers {
-		if err := target.consumer.ConsumeGatewayEvent(r.Context(), *event); err != nil {
+		if err := target.consumer.ConsumeGatewayEvent(ctx, *event); err != nil {
 			s.metrics.observeGatewayEvent(string(target.name), event.Kind, metricResultError)
 			s.logger.Warn("gateway event failed", "event_id", event.EventID, "kind", event.Kind, "board", event.Post.Board, "thread_id", event.Post.ThreadID, "error", err)
 			s.metrics.observeGatewayWebhook("consumer_error")

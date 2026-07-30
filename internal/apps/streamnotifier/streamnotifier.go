@@ -13,27 +13,27 @@ import (
 )
 
 const (
+	endMissThreshold = 2
+
 	Source             = "streamnotifier"
 	NotificationSent   = "sent"
 	NotificationFailed = "failed"
 )
 
 type Config struct {
-	Channels         []probe.Channel
-	PollInterval     time.Duration
-	EndMissThreshold int
+	Channels     []probe.Channel
+	PollInterval time.Duration
 }
 
 type Poller struct {
-	Channels         []probe.Channel
-	Format           Formatter
-	EndMissThreshold int
-	ChatID           int64
-	Store            Store
-	Client           Client
-	Telegram         Sender
-	Metrics          Metrics
-	Logger           *slog.Logger
+	Channels []probe.Channel
+	Format   Formatter
+	ChatID   int64
+	Store    Store
+	Client   Client
+	Telegram Sender
+	Metrics  Metrics
+	Logger   *slog.Logger
 }
 
 type Client interface {
@@ -75,12 +75,12 @@ func (s Poller) pollChannel(ctx context.Context, channel probe.Channel) error {
 	}
 
 	if live {
-		return s.HandleStartedStream(ctx, channel, stream)
+		return s.handleStartedStream(ctx, channel, stream)
 	}
-	return s.HandleStoppedStream(ctx, channel, stream)
+	return s.handleStoppedStream(ctx, channel, stream)
 }
 
-func (s Poller) HandleStartedStream(ctx context.Context, channel probe.Channel, stream streamnotifierstate.Stream) error {
+func (s Poller) handleStartedStream(ctx context.Context, channel probe.Channel, stream streamnotifierstate.Stream) error {
 	wasActive := stream.Active
 	previousMisses := stream.Consecutive404s
 	stream.Key = channel.Key
@@ -101,6 +101,7 @@ func (s Poller) HandleStartedStream(ctx context.Context, channel probe.Channel, 
 
 	message := s.Format.LiveNotification(LiveNotice{PageURL: channel.PageURL})
 	if err := s.Telegram.Send(ctx, telegram.SendRequest{ChatID: s.ChatID, Message: message}); err != nil {
+		s.Metrics.ObserveNotification(Source, NotificationFailed)
 		return fmt.Errorf("send stream telegram message for %s: %w", channel.Key, err)
 	}
 	s.Logger.Info("stream live notification sent", "stream", channel.Key)
@@ -114,20 +115,20 @@ func (s Poller) HandleStartedStream(ctx context.Context, channel probe.Channel, 
 	return nil
 }
 
-func (s Poller) HandleStoppedStream(ctx context.Context, channel probe.Channel, stream streamnotifierstate.Stream) error {
+func (s Poller) handleStoppedStream(ctx context.Context, channel probe.Channel, stream streamnotifierstate.Stream) error {
 	if !stream.Active {
 		return nil
 	}
 
 	stream.Consecutive404s++
-	if stream.Consecutive404s < s.EndMissThreshold {
+	if stream.Consecutive404s < endMissThreshold {
 		return s.storeStreamState(ctx, channel.Key, stream)
 	}
 
 	stream.Active = false
 	stream.LiveNotified = false
 	stream.Consecutive404s = 0
-	s.Logger.Info("stream marked offline", "stream", channel.Key, "misses", s.EndMissThreshold)
+	s.Logger.Info("stream marked offline", "stream", channel.Key, "misses", endMissThreshold)
 	return s.storeStreamState(ctx, channel.Key, stream)
 }
 

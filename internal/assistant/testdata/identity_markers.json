@@ -20,8 +20,12 @@
       "url": "https://ptchan.org/i/thread/4500.html#4501",
       "date": "2026-07-23T13:04:00Z",
       "message": "I can confirm the syntax example: >>4500 points at the OP.",
-      "name": "Guide",
-      "tripcode": "!martie",
+      "name": "Marta",
+      "tripcode": "!!dev",
+      "origin": {
+        "kind": "integration",
+        "name": "martie-dev"
+      },
       "country": "NL",
       "attachment_count": 0,
       "references": [

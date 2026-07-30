@@ -16,11 +16,10 @@ import (
 func TestStreamPollContinuesAfterChannelFailure(t *testing.T) {
 	client := &fakeStreamClient{fail: "first"}
 	watcher := Poller{
-		Channels:         []probe.Channel{{Key: "first"}, {Key: "second"}},
-		EndMissThreshold: 2,
-		Client:           client,
-		Store:            &fakeStreamStore{},
-		Telegram:         &fakeMessageSender{},
+		Channels: []probe.Channel{{Key: "first"}, {Key: "second"}},
+		Client:   client,
+		Store:    &fakeStreamStore{},
+		Telegram: &fakeMessageSender{},
 	}
 
 	err := watcher.Poll(context.Background())
@@ -36,17 +35,16 @@ func TestStartedStreamIsMarkedNotifiedAfterSend(t *testing.T) {
 	store := &fakeStreamStore{}
 	sender := &fakeMessageSender{}
 	watcher := Poller{
-		ChatID:           42,
-		Format:           NewFormatter(localization.New(localization.English)),
-		EndMissThreshold: 2,
-		Store:            store,
-		Telegram:         sender,
-		Metrics:          &fakeMetrics{},
-		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ChatID:   42,
+		Format:   NewFormatter(localization.New(localization.English)),
+		Store:    store,
+		Telegram: sender,
+		Metrics:  &fakeMetrics{},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	channel := probe.Channel{Key: "live", PageURL: "https://example.com/live"}
 
-	if err := watcher.HandleStartedStream(context.Background(), channel, streamnotifierstate.Stream{}); err != nil {
+	if err := watcher.handleStartedStream(context.Background(), channel, streamnotifierstate.Stream{}); err != nil {
 		t.Fatalf("handleStartedStream() error = %v", err)
 	}
 	if len(sender.requests) != 1 {
@@ -57,19 +55,39 @@ func TestStartedStreamIsMarkedNotifiedAfterSend(t *testing.T) {
 	}
 }
 
+func TestStartedStreamCountsFailedNotification(t *testing.T) {
+	metrics := &fakeMetrics{}
+	watcher := Poller{
+		ChatID:   42,
+		Format:   NewFormatter(localization.New(localization.English)),
+		Store:    &fakeStreamStore{},
+		Telegram: &fakeMessageSender{err: errors.New("send failed")},
+		Metrics:  metrics,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	err := watcher.handleStartedStream(context.Background(), probe.Channel{Key: "live", PageURL: "https://example.com/live"}, streamnotifierstate.Stream{})
+	if err == nil {
+		t.Fatal("handleStartedStream() error = nil")
+	}
+	if metrics.results[NotificationFailed] != 1 {
+		t.Fatalf("failed notification count = %d, want 1", metrics.results[NotificationFailed])
+	}
+}
+
 func TestStoppedStreamRequiresConsecutiveMisses(t *testing.T) {
 	store := &fakeStreamStore{}
-	watcher := Poller{EndMissThreshold: 2, Store: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	watcher := Poller{Store: store, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	channel := probe.Channel{Key: "live"}
 	stream := streamnotifierstate.Stream{Key: "live", Active: true, LiveNotified: true}
 
-	if err := watcher.HandleStoppedStream(context.Background(), channel, stream); err != nil {
+	if err := watcher.handleStoppedStream(context.Background(), channel, stream); err != nil {
 		t.Fatalf("first handleStoppedStream() error = %v", err)
 	}
 	if !store.state.Active || store.state.Consecutive404s != 1 {
 		t.Fatalf("state after first miss = %+v, want active with one miss", store.state)
 	}
-	if err := watcher.HandleStoppedStream(context.Background(), channel, store.state); err != nil {
+	if err := watcher.handleStoppedStream(context.Background(), channel, store.state); err != nil {
 		t.Fatalf("second handleStoppedStream() error = %v", err)
 	}
 	if store.state.Active || store.state.LiveNotified || store.state.Consecutive404s != 0 {
@@ -107,13 +125,21 @@ func (f *fakeStreamStore) UpsertStreamState(_ context.Context, stream streamnoti
 
 type fakeMessageSender struct {
 	requests []telegram.SendRequest
+	err      error
 }
 
-type fakeMetrics struct{}
+type fakeMetrics struct {
+	results map[string]int
+}
 
-func (*fakeMetrics) ObserveNotification(string, string) {}
+func (f *fakeMetrics) ObserveNotification(_ string, result string) {
+	if f.results == nil {
+		f.results = make(map[string]int)
+	}
+	f.results[result]++
+}
 
 func (f *fakeMessageSender) Send(_ context.Context, request telegram.SendRequest) error {
 	f.requests = append(f.requests, request)
-	return nil
+	return f.err
 }

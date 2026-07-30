@@ -27,13 +27,9 @@ func main() {
 		return
 	}
 
-	cfg, err := app.LoadConfig()
+	cfg, err := app.LoadConfig(appName)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
-	}
-	cfg, err = cfg.ForApp(appName)
-	if err != nil {
-		log.Fatalf("select app: %v", err)
 	}
 	logger := newLogger(cfg.Runtime.Logging)
 
@@ -47,7 +43,7 @@ func main() {
 		return
 	}
 
-	store, err := storage.Open(cfg.Storage.SQLitePath)
+	store, err := storage.Open(cfg.SQLitePath)
 	if err != nil {
 		logger.Error("open sqlite", "error", err)
 		os.Exit(1)

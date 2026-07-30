@@ -14,6 +14,7 @@ import (
 const (
 	defaultBaseURL   = "https://api.deepseek.com"
 	maxResponseBytes = 1 << 20
+	requestTimeout   = 60 * time.Second
 )
 
 type Client struct {
@@ -67,13 +68,13 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("deepseek api error: status %d: %s", e.StatusCode, e.Message)
 }
 
-func New(apiKey, model string, maxTokens int, timeout time.Duration) *Client {
+func New(apiKey, model string, maxTokens int) *Client {
 	return &Client{
 		APIKey:     apiKey,
 		Model:      model,
 		MaxTokens:  maxTokens,
 		BaseURL:    defaultBaseURL,
-		HTTPClient: &http.Client{Timeout: timeout},
+		HTTPClient: &http.Client{Timeout: requestTimeout},
 	}
 }
 

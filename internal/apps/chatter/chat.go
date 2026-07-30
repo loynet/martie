@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +23,7 @@ const (
 	typingInterval       = 4 * time.Second
 	rejectionReplyWindow = 10 * time.Second
 	replyContextRunes    = 1000
+	rateLimitWindow      = time.Hour
 
 	Surface       = "chatter"
 	ResultSuccess = "success"
@@ -35,15 +35,12 @@ type Config struct {
 	DiscussionChatID   int64
 	AllowAllUsers      bool
 	AllowedUserIDs     []int64
-	RateLimitWindow    time.Duration
 	UserRequestLimit   int
 	UserRequestBurst   int
 	GlobalRequestLimit int
 	GlobalRequestBurst int
 	SystemPrompt       string
 	MaxInputRunes      int
-	LogMemory          bool
-	Trace              assistant.TraceConfig
 	ConversationTTL    time.Duration
 	HistoryExchanges   int
 	PtchanContext      assistant.PtchanContextConfig
@@ -54,7 +51,7 @@ type Store interface {
 	SetCursor(context.Context, string, int64) error
 }
 
-// assistant owns the conversational application flow between Telegram and the
+// Assistant owns the conversational application flow between Telegram and the
 // completion engine. It admits requests, constructs bounded context, replaces
 // Telegram identities with temporary aliases, and delivers the final reply.
 // Conversation history is process-local and intentionally not persisted.
@@ -75,7 +72,6 @@ type Assistant struct {
 	replies   *rate.Limiter
 	history   map[conversationKey]*conversation
 	ptchan    *assistant.PtchanContext
-	traces    *assistant.TraceDumper
 	aliasSeed string
 }
 
@@ -110,7 +106,7 @@ type Sender interface {
 }
 
 type Metrics interface {
-	ObserveWorkerRun(worker string, duration time.Duration, err error)
+	ObserveOperation(operation string, duration time.Duration, err error)
 	ObserveAssistantAdmission(surface, result string)
 	ObserveAssistantReply(surface, result string)
 	ObserveAssistantContext(surface, contextType string)
@@ -141,10 +137,8 @@ type preparedRequest struct {
 	key          conversationKey
 	conversation *conversation
 	messages     []deepseek.Message
-	trace        *assistant.Trace
 	userAlias    string
 	userMessage  string
-	startedAt    time.Time
 }
 
 func New(cfg Config, text localization.Localizer, store Store, client *telegram.Client, completer Completer, metrics Metrics, logger *slog.Logger) *Assistant {
@@ -163,7 +157,7 @@ func New(cfg Config, text localization.Localizer, store Store, client *telegram.
 		metrics:   metrics,
 		logger:    logger,
 		allowed:   allowed,
-		global:    newRateLimiter(cfg.GlobalRequestLimit, cfg.RateLimitWindow, cfg.GlobalRequestBurst),
+		global:    hourlyRateLimiter(cfg.GlobalRequestLimit, cfg.GlobalRequestBurst),
 		users:     make(map[int64]userRateLimiter),
 		replies:   rate.NewLimiter(rate.Every(rejectionReplyWindow), 1),
 		history:   make(map[conversationKey]*conversation),
@@ -177,10 +171,6 @@ func (c *Assistant) SetModelName(modelName string) {
 
 func (c *Assistant) SetPtchanContext(ptchan *assistant.PtchanContext) {
 	c.ptchan = ptchan
-}
-
-func (c *Assistant) SetTraces(traces *assistant.TraceDumper) {
-	c.traces = traces
 }
 
 func (c *Assistant) Run(ctx context.Context) error {
@@ -204,13 +194,14 @@ func (c *Assistant) Run(ctx context.Context) error {
 	for {
 		startedAt := time.Now()
 		updates, err := c.client.GetUpdates(ctx, offset)
-		c.metrics.ObserveWorkerRun(Surface, time.Since(startedAt), err)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
+			c.metrics.ObserveOperation(Surface, time.Since(startedAt), err)
 			return fmt.Errorf("receive updates: %w", err)
 		}
+		c.metrics.ObserveOperation(Surface, time.Since(startedAt), nil)
 		c.expireConversations(time.Now())
 
 		for _, update := range updates {
@@ -329,14 +320,14 @@ func (c *Assistant) allowAt(userID int64, now time.Time) bool {
 	defer c.mu.Unlock()
 
 	for id, user := range c.users {
-		if now.Sub(user.lastSeen) >= c.cfg.RateLimitWindow {
+		if now.Sub(user.lastSeen) >= rateLimitWindow {
 			delete(c.users, id)
 		}
 	}
 
 	user, ok := c.users[userID]
 	if !ok {
-		user.limiter = newRateLimiter(c.cfg.UserRequestLimit, c.cfg.RateLimitWindow, c.cfg.UserRequestBurst)
+		user.limiter = hourlyRateLimiter(c.cfg.UserRequestLimit, c.cfg.UserRequestBurst)
 	}
 	user.lastSeen = now
 	c.users[userID] = user
@@ -346,8 +337,8 @@ func (c *Assistant) allowAt(userID int64, now time.Time) bool {
 	return user.limiter.AllowN(now, 1) && c.global.AllowN(now, 1)
 }
 
-func newRateLimiter(requests int, window time.Duration, burst int) *rate.Limiter {
-	refill := rate.Limit(float64(requests) / window.Seconds())
+func hourlyRateLimiter(requests, burst int) *rate.Limiter {
+	refill := rate.Limit(float64(requests) / rateLimitWindow.Seconds())
 	return rate.NewLimiter(refill, burst)
 }
 
@@ -360,20 +351,13 @@ func (c *Assistant) handle(ctx context.Context, request Request) bool {
 	}()
 
 	prepared := c.prepare(ctx, request, time.Now())
-	defer func() { c.dumpTrace(prepared.trace) }()
-	if c.cfg.LogMemory {
-		c.logger.Debug("chatter memory system prompt", "content", c.cfg.SystemPrompt)
-	}
-	c.logMemory("request", prepared.key, prepared.messages)
 
+	completionStarted := time.Now()
 	completion, err := c.completer.Complete(ctx, c.cfg.SystemPrompt, prepared.messages)
-	prepared.trace.Completion = completion
 	stopTyping()
 	<-typingDone
-	c.metrics.ObserveModelCompletion(Surface, "deepseek", c.modelName, time.Since(prepared.startedAt), completion, err)
+	c.metrics.ObserveModelCompletion(Surface, "deepseek", c.modelName, time.Since(completionStarted), completion, err)
 	if err != nil {
-		prepared.trace.Outcome = "completion error"
-		prepared.trace.Err = err
 		c.logger.Warn("chatter completion failed", "message_id", request.MessageID, "chat", request.ChatTitle, "chat_id", c.cfg.DiscussionChatID, "error", err)
 		if ctx.Err() != nil {
 			c.discardEmptyConversation(prepared.key)
@@ -396,19 +380,11 @@ func (c *Assistant) handle(ctx context.Context, request Request) bool {
 		message = telegram.MarkdownMessage(renderedText)
 	}
 	if !c.sendReply(ctx, request, message) {
-		prepared.trace.Outcome = "delivery error"
 		c.discardEmptyConversation(prepared.key)
 		return ctx.Err() == nil
 	}
-	removed := prepared.conversation.remember(prepared.userAlias, prepared.userMessage, text, time.Now(), c.cfg.HistoryExchanges)
-	prepared.trace.Outcome = "stored"
-	prepared.trace.StoredAfter = prepared.conversation.messages()
-	prepared.trace.RemovedExchanges = removed
+	prepared.conversation.remember(prepared.userAlias, prepared.userMessage, text, time.Now(), c.cfg.HistoryExchanges)
 	c.metrics.SetActiveConversations(Surface, len(c.history))
-	if removed > 0 && c.cfg.LogMemory {
-		c.logger.Debug("chatter memory evicted", "chat_id", prepared.key.chatID, "thread_id", prepared.key.threadID, "removed", removed, "remaining", len(prepared.conversation.exchanges), "runes", prepared.conversation.runes())
-	}
-	c.logMemory("stored", prepared.key, prepared.conversation.messages())
 	return true
 }
 
@@ -422,10 +398,10 @@ func (c *Assistant) prepare(ctx context.Context, request Request, startedAt time
 	}
 
 	messages := current.messages()
-	storedBefore := append([]deepseek.Message(nil), messages...)
 	if len(messages) > 0 {
 		c.metrics.ObserveAssistantContext(Surface, "history")
 	}
+	historyEntries := len(messages) / 2
 
 	userAlias := current.participantAlias(request.UserID, request.Username, request.FirstName)
 	if request.ReplyUserID != 0 {
@@ -440,56 +416,27 @@ func (c *Assistant) prepare(ctx context.Context, request Request, startedAt time
 		c.metrics.ObserveAssistantContext(Surface, "reply")
 	}
 
-	externalContext, usedPtchanContext := c.ptchanContext(ctx, request)
-	messages = append(messages, deepseek.Message{Role: deepseek.RoleUser, Content: formatTelegramCurrentRequest(userAlias, userMessage, len(storedBefore)/2, hasReplyContext, externalContext)})
-
-	trace := &assistant.Trace{
-		Surface:       Surface,
-		StartedAt:     startedAt,
-		MessageID:     request.MessageID,
-		ThreadID:      request.MessageThreadID,
-		UserAlias:     userAlias,
-		UsedHistory:   len(storedBefore) > 0,
-		UsedReply:     hasReplyContext,
-		UsedPtchan:    usedPtchanContext,
-		StoredBefore:  storedBefore,
-		StoredAfter:   append([]deepseek.Message(nil), storedBefore...),
-		SystemPrompt:  c.cfg.SystemPrompt,
-		ModelMessages: append([]deepseek.Message(nil), messages...),
-	}
+	externalContext := c.ptchanContext(ctx, request)
+	messages = append(messages, deepseek.Message{Role: deepseek.RoleUser, Content: formatTelegramCurrentRequest(userAlias, userMessage, historyEntries, hasReplyContext, externalContext)})
 
 	return preparedRequest{
 		key:          key,
 		conversation: current,
 		messages:     messages,
-		trace:        trace,
 		userAlias:    userAlias,
 		userMessage:  userMessage,
-		startedAt:    startedAt,
 	}
 }
 
-func (c *Assistant) ptchanContext(ctx context.Context, request Request) (string, bool) {
+func (c *Assistant) ptchanContext(ctx context.Context, request Request) string {
 	if c.ptchan == nil {
-		return "", false
+		return ""
 	}
 	text, ok := c.ptchan.ForText(ctx, assistant.PtchanContextRequest{Text: request.Text, ReplyText: request.ReplyText})
 	if ok {
 		c.metrics.ObserveAssistantContext(Surface, "ptchan")
 	}
-	return text, ok
-}
-
-func (c *Assistant) dumpTrace(trace *assistant.Trace) {
-	if c.traces == nil {
-		return
-	}
-	path, err := c.traces.Dump(trace)
-	if err != nil {
-		c.logger.Warn("chatter trace dump failed", "message_id", trace.MessageID, "thread_id", trace.ThreadID, "error", err)
-		return
-	}
-	c.logger.Info("chatter trace dumped", "trace_id", filepath.Base(path), "message_id", trace.MessageID, "thread_id", trace.ThreadID, "path", path)
+	return text
 }
 
 func (c *Assistant) discardEmptyConversation(key conversationKey) {
@@ -501,27 +448,13 @@ func (c *Assistant) discardEmptyConversation(key conversationKey) {
 
 func (c *Assistant) expireConversations(now time.Time) {
 	for existingKey, conversation := range c.history {
-		removed := conversation.expire(now, c.cfg.ConversationTTL)
-		if removed > 0 && c.cfg.LogMemory {
-			c.logger.Debug("chatter memory expired", "chat_id", existingKey.chatID, "thread_id", existingKey.threadID, "removed", removed, "remaining", len(conversation.exchanges))
-		}
+		conversation.expire(now, c.cfg.ConversationTTL)
 		if len(conversation.exchanges) == 0 {
 			delete(c.history, existingKey)
 			continue
 		}
 	}
 	c.metrics.SetActiveConversations(Surface, len(c.history))
-}
-
-func (c *Assistant) logMemory(stage string, key conversationKey, messages []deepseek.Message) {
-	if !c.cfg.LogMemory {
-		return
-	}
-	conversation := c.history[key]
-	c.logger.Debug("chatter memory", "stage", stage, "chat_id", key.chatID, "thread_id", key.threadID, "exchanges", len(conversation.exchanges), "participants", len(conversation.participants), "mentions", len(conversation.mentions), "messages", len(messages))
-	for i, message := range messages {
-		c.logger.Debug("chatter memory message", "stage", stage, "index", i, "role", message.Role, "content", message.Content)
-	}
 }
 
 func (c *Assistant) showTyping(ctx context.Context, request Request) {

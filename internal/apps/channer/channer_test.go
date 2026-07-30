@@ -10,10 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/time/rate"
-
 	channerstate "martie/internal/apps/channer/state"
-	"martie/internal/assistant"
 	"martie/internal/deepseek"
 	"martie/internal/gateway"
 	"martie/internal/storage"
@@ -64,12 +61,11 @@ func TestChannerAdmissionRejectsIntegrationPosts(t *testing.T) {
 	}
 }
 
-func TestChannerAdmissionRejectsMartieTripcodePosts(t *testing.T) {
+func TestChannerAdmissionDoesNotGuessOriginFromTripcode(t *testing.T) {
 	channer := Responder{
 		Config: Config{
 			Mentions:      []string{"@martie"},
 			MaxInputRunes: 100,
-			PtchanContext: assistant.PtchanContextConfig{SelfTripcodes: []string{"!martie"}},
 		},
 		Logger: discardLogger(),
 	}
@@ -81,8 +77,8 @@ func TestChannerAdmissionRejectsMartieTripcodePosts(t *testing.T) {
 			Tripcode: "!martie",
 		},
 	})
-	if result != admissionBot {
-		t.Fatalf("admission = %q, want bot", result)
+	if result != admissionAccepted {
+		t.Fatalf("admission = %q, want accepted", result)
 	}
 }
 
@@ -169,24 +165,42 @@ func TestChannerAdmissionRejectsLongPost(t *testing.T) {
 	}
 }
 
+func TestChannerAdmissionStripsUnsafeControls(t *testing.T) {
+	channer := Responder{
+		Config: Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
+		Logger: discardLogger(),
+	}
+
+	request, result := channer.admit(gateway.WebhookEvent{
+		Kind: gateway.PostCreated,
+		Post: gateway.Post{Message: "@martie hello\x00\nworld\x1b"},
+	})
+	if result != admissionAccepted {
+		t.Fatalf("admission = %q", result)
+	}
+	if request.Text != "hello\nworld" {
+		t.Fatalf("text = %q", request.Text)
+	}
+}
+
 func TestFormatChannerReplySanitizesControls(t *testing.T) {
-	got := formatChannerReply(" hello\x00\nthere\x1f ")
-	want := "hello\nthere"
+	got := formatChannerReply(101, " hello\x00\nthere\x1f ")
+	want := ">>101\nhello\nthere"
 	if got != want {
 		t.Fatalf("reply = %q, want %q", got, want)
 	}
 }
 
-func TestFormatChannerReplyKeepsModelPostReference(t *testing.T) {
-	got := formatChannerReply(" >>101\n\nhello")
-	want := ">>101\n\nhello"
+func TestFormatChannerReplyAddsFocusBeforeOtherModelReference(t *testing.T) {
+	got := formatChannerReply(101, " >>99\n\nhello")
+	want := ">>101\n>>99\n\nhello"
 	if got != want {
 		t.Fatalf("reply = %q, want %q", got, want)
 	}
 }
 
 func TestFormatChannerReplyFitsGatewayByteLimit(t *testing.T) {
-	got := formatChannerReply(strings.Repeat("界", 4000))
+	got := formatChannerReply(101, strings.Repeat("界", 4000))
 	if len(got) > maxChannerReplyBytes {
 		t.Fatalf("reply is %d bytes", len(got))
 	}
@@ -198,12 +212,14 @@ func TestFormatChannerReplyFitsGatewayByteLimit(t *testing.T) {
 func TestChannerConsumesEventOnce(t *testing.T) {
 	store := testChannerStore(t)
 	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	metrics := &recordingMetrics{}
 	channer := Responder{
 		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
 		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "hello back", FinishReason: deepseek.FinishStop}},
 		Poster:    &fakePtchanPoster{reply: gateway.ReplyResponse{Board: "i", ThreadID: 100, PostID: 105}},
 		Logger:    discardLogger(),
+		Metrics:   metrics,
 		nowFunc:   func() time.Time { return now },
 	}
 	event := gateway.WebhookEvent{
@@ -231,67 +247,17 @@ func TestChannerConsumesEventOnce(t *testing.T) {
 	if !ok {
 		t.Fatal("event was not recorded")
 	}
-	if record.Status != channerstate.EventPosted || record.Board != "i" || record.ThreadID != 100 || record.PostID != 101 || record.ReplyPostID != 105 {
+	if record.Status != channerstate.EventPosted || record.Board != "i" || record.ThreadID != 100 || record.PostID != 101 {
 		t.Fatalf("record = %+v", record)
 	}
 	if !record.CreatedAt.Equal(now) {
 		t.Fatalf("created at = %v, want %v", record.CreatedAt, now)
 	}
-}
-
-func TestChannerIgnoresPostsReferencingOwnReply(t *testing.T) {
-	store := testChannerStore(t)
-	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
-	completer := &fakeCompleter{completion: deepseek.Completion{Text: "hello back", FinishReason: deepseek.FinishStop}}
-	poster := &fakePtchanPoster{reply: gateway.ReplyResponse{Board: "i", ThreadID: 100, PostID: 105}}
-	channer := Responder{
-		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
-		Store:     store,
-		Completer: completer,
-		Poster:    poster,
-		Logger:    discardLogger(),
-		nowFunc:   func() time.Time { return now },
+	if metrics.admissions[admissionAccepted] != 1 || metrics.admissions[admissionDuplicate] != 1 {
+		t.Fatalf("admissions = %v, want one accepted and one duplicate", metrics.admissions)
 	}
-
-	first := gateway.WebhookEvent{
-		EventID: "Ptchan:post.created:i:101",
-		Kind:    gateway.PostCreated,
-		Post: gateway.Post{
-			Board:    "i",
-			ThreadID: 100,
-			PostID:   101,
-			Message:  "@martie hello",
-		},
-	}
-	if err := channer.ConsumeGatewayEvent(context.Background(), first); err != nil {
-		t.Fatal(err)
-	}
-
-	replyToMartie := gateway.WebhookEvent{
-		EventID: "Ptchan:post.created:i:106",
-		Kind:    gateway.PostCreated,
-		Post: gateway.Post{
-			Board:      "i",
-			ThreadID:   100,
-			PostID:     106,
-			Message:    ">>105\n@martie one more?",
-			References: []gateway.PostRef{{Board: "i", ThreadID: 100, PostID: 105}},
-		},
-	}
-	if err := channer.ConsumeGatewayEvent(context.Background(), replyToMartie); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(completer.requests) != 1 {
-		t.Fatalf("completion requests = %d, want 1", len(completer.requests))
-	}
-	if len(poster.requests) != 1 {
-		t.Fatalf("posted requests = %d, want 1", len(poster.requests))
-	}
-	if record, ok, err := store.GetEvent(context.Background(), replyToMartie.EventID); err != nil {
-		t.Fatal(err)
-	} else if ok {
-		t.Fatalf("reply-to-bot event was persisted: %+v", record)
+	if metrics.outcomes[outcomePosted] != 1 {
+		t.Fatalf("outcomes = %v, want one posted", metrics.outcomes)
 	}
 }
 
@@ -356,13 +322,15 @@ func TestChannerPostsReplyToFocusPost(t *testing.T) {
 	if len(completer.requests) != 1 || completer.requests[0].systemPrompt != "public prompt" {
 		t.Fatalf("completion requests = %+v", completer.requests)
 	}
-	if len(completer.requests[0].messages) != 1 || !strings.Contains(completer.requests[0].messages[0].Content, "what now?") {
+	if len(completer.requests[0].messages) != 1 ||
+		!strings.Contains(completer.requests[0].messages[0].Content, "what now?") ||
+		!strings.Contains(completer.requests[0].messages[0].Content, "automatically prefixes your answer with >>102") {
 		t.Fatalf("messages = %+v", completer.requests[0].messages)
 	}
 	if len(poster.requests) != 1 {
 		t.Fatalf("posted requests = %d", len(poster.requests))
 	}
-	if got := poster.requests[0]; got.ref.Board != "i" || got.ref.ThreadID != 100 || got.message != "here is the answer" {
+	if got := poster.requests[0]; got.ref.Board != "i" || got.ref.ThreadID != 100 || got.message != ">>102\nhere is the answer" {
 		t.Fatalf("post request = %+v", got)
 	}
 }
@@ -370,12 +338,14 @@ func TestChannerPostsReplyToFocusPost(t *testing.T) {
 func TestChannerMarksStructuredPostingFailureFinal(t *testing.T) {
 	store := testChannerStore(t)
 	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	metrics := &recordingMetrics{}
 	channer := Responder{
 		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
 		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "answer", FinishReason: deepseek.FinishStop}},
 		Poster:    &fakePtchanPoster{err: &gateway.Error{Code: "rate_limited", Message: "wait", Retryable: true}},
 		Logger:    discardLogger(),
+		Metrics:   metrics,
 		nowFunc:   func() time.Time { return now },
 	}
 	event := gateway.WebhookEvent{
@@ -397,18 +367,29 @@ func TestChannerMarksStructuredPostingFailureFinal(t *testing.T) {
 	if record.Status != channerstate.EventFailedFinal || record.ErrorCode != "rate_limited" {
 		t.Fatalf("record = %+v", record)
 	}
+	if metrics.outcomes[outcomeGatewayRateLimited] != 1 {
+		t.Fatalf("outcomes = %v, want one gateway_rate_limited", metrics.outcomes)
+	}
 }
 
-func TestChannerMarksRateLimitedEventFinal(t *testing.T) {
+func TestChannerMarksThreadRateLimitedEventFinal(t *testing.T) {
 	store := testChannerStore(t)
+	metrics := &recordingMetrics{}
+	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	limit := NewLimiter(25, 3, 6, 2)
+	thread := gateway.ThreadRef{Board: "i", ThreadID: 100}
+	if limit.allow(thread, now) != limitAllowed || limit.allow(thread, now) != limitAllowed {
+		t.Fatal("could not exhaust thread burst")
+	}
 	channer := Responder{
 		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
 		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "answer", FinishReason: deepseek.FinishStop}},
 		Poster:    &fakePtchanPoster{reply: gateway.ReplyResponse{Board: "i", ThreadID: 100, PostID: 106}},
-		Limit:     rate.NewLimiter(rate.Limit(0.001), 0),
+		Limit:     limit,
 		Logger:    discardLogger(),
-		nowFunc:   func() time.Time { return time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC) },
+		Metrics:   metrics,
+		nowFunc:   func() time.Time { return now },
 	}
 	event := gateway.WebhookEvent{
 		EventID: "Ptchan:post.created:i:105",
@@ -426,8 +407,11 @@ func TestChannerMarksRateLimitedEventFinal(t *testing.T) {
 	if !ok {
 		t.Fatal("event was not recorded")
 	}
-	if record.Status != channerstate.EventFailedFinal || record.ErrorCode != "rate_limited" {
+	if record.Status != channerstate.EventFailedFinal || record.ErrorCode != outcomeThreadRateLimited {
 		t.Fatalf("record = %+v", record)
+	}
+	if metrics.outcomes[outcomeThreadRateLimited] != 1 {
+		t.Fatalf("outcomes = %v, want one local_thread_rate_limited", metrics.outcomes)
 	}
 }
 
@@ -493,6 +477,90 @@ func TestChannerMarksUnstructuredPostingErrorUnknown(t *testing.T) {
 	}
 }
 
+func TestChannerFinalizesFailureAfterContextCancellation(t *testing.T) {
+	store := testChannerStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	channer := Responder{
+		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
+		Store:     store,
+		Completer: cancelingCompleter{cancel: cancel},
+		Poster:    &fakePtchanPoster{},
+		Logger:    discardLogger(),
+	}
+	event := gateway.WebhookEvent{
+		EventID: "Ptchan:post.created:i:108",
+		Kind:    gateway.PostCreated,
+		Post:    gateway.Post{Board: "i", ThreadID: 100, PostID: 108, Message: "@martie hello"},
+	}
+
+	if err := channer.ConsumeGatewayEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := store.GetEvent(context.Background(), event.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || record.Status != channerstate.EventFailedFinal || record.ErrorCode != "completion_error" {
+		t.Fatalf("record = %+v, found %t", record, ok)
+	}
+}
+
+func TestChannerRecordsUnknownWhenPostedStateCannotBeSaved(t *testing.T) {
+	store := testChannerStore(t)
+	channer := Responder{
+		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
+		Store:     failingPostedStore{Store: store},
+		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "answer", FinishReason: deepseek.FinishStop}},
+		Poster: &fakePtchanPoster{reply: gateway.ReplyResponse{
+			Board: "i", ThreadID: 100, PostID: 109,
+		}},
+		Logger: discardLogger(),
+	}
+	event := gateway.WebhookEvent{
+		EventID: "Ptchan:post.created:i:109",
+		Kind:    gateway.PostCreated,
+		Post:    gateway.Post{Board: "i", ThreadID: 100, PostID: 109, Message: "@martie hello"},
+	}
+
+	if err := channer.ConsumeGatewayEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := store.GetEvent(context.Background(), event.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || record.Status != channerstate.EventUnknown || record.ErrorCode != "posted_state_update_failed" {
+		t.Fatalf("record = %+v, found %t", record, ok)
+	}
+}
+
+func TestChannerPrunesExpiredEvents(t *testing.T) {
+	store := testChannerStore(t)
+	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
+	for _, event := range []channerstate.Event{
+		{EventID: "old", Status: channerstate.EventFailedFinal, CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now.Add(-48 * time.Hour)},
+		{EventID: "recent", Status: channerstate.EventFailedFinal, CreatedAt: now, UpdatedAt: now},
+	} {
+		if _, err := store.StoreEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	channer := Responder{
+		Config:  Config{PruneAfter: 24 * time.Hour},
+		Store:   store,
+		Logger:  discardLogger(),
+		nowFunc: func() time.Time { return now },
+	}
+
+	channer.prune(context.Background())
+	if _, ok, err := store.GetEvent(context.Background(), "old"); err != nil || ok {
+		t.Fatalf("old event found = %t, error = %v", ok, err)
+	}
+	if _, ok, err := store.GetEvent(context.Background(), "recent"); err != nil || !ok {
+		t.Fatalf("recent event found = %t, error = %v", ok, err)
+	}
+}
+
 func testChannerStore(t *testing.T) *channerstate.Store {
 	t.Helper()
 	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -530,9 +598,52 @@ type fakeCompleter struct {
 	requests   []completionRequest
 }
 
+type cancelingCompleter struct {
+	cancel context.CancelFunc
+}
+
+func (f cancelingCompleter) Complete(ctx context.Context, _ string, _ []deepseek.Message) (deepseek.Completion, error) {
+	f.cancel()
+	return deepseek.Completion{}, ctx.Err()
+}
+
+type failingPostedStore struct {
+	Store
+}
+
+func (failingPostedStore) MarkEventPosted(context.Context, string, time.Time) error {
+	return errors.New("database unavailable")
+}
+
 type completionRequest struct {
 	systemPrompt string
 	messages     []deepseek.Message
+}
+
+type recordingMetrics struct {
+	admissions map[admissionResult]int
+	outcomes   map[string]int
+}
+
+func (m *recordingMetrics) ObserveAssistantAdmission(_ string, result string) {
+	if m.admissions == nil {
+		m.admissions = make(map[admissionResult]int)
+	}
+	m.admissions[admissionResult(result)]++
+}
+
+func (*recordingMetrics) ObserveAssistantReply(string, string) {}
+
+func (*recordingMetrics) ObserveAssistantContext(string, string) {}
+
+func (m *recordingMetrics) ObserveChannerOutcome(outcome string) {
+	if m.outcomes == nil {
+		m.outcomes = make(map[string]int)
+	}
+	m.outcomes[outcome]++
+}
+
+func (*recordingMetrics) ObserveModelCompletion(string, string, string, time.Duration, deepseek.Completion, error) {
 }
 
 func (f *fakeCompleter) Complete(_ context.Context, systemPrompt string, messages []deepseek.Message) (deepseek.Completion, error) {

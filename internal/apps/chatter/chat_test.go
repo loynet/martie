@@ -1,14 +1,11 @@
 package chatter
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -180,7 +177,6 @@ func TestChatterGlobalBurstLimit(t *testing.T) {
 
 func TestChatterRateLimitRefillsOverWindow(t *testing.T) {
 	cfg := testChatterConfig()
-	cfg.RateLimitWindow = time.Hour
 	cfg.UserRequestLimit = 2
 	cfg.UserRequestBurst = 1
 	chatter := New(cfg, localization.New(localization.English), nil, nil, nil, nil, nil)
@@ -199,7 +195,6 @@ func TestChatterRateLimitRefillsOverWindow(t *testing.T) {
 
 func TestChatterGlobalRejectionDoesNotConsumeUserToken(t *testing.T) {
 	cfg := testChatterConfig()
-	cfg.RateLimitWindow = time.Hour
 	cfg.UserRequestLimit = 1
 	cfg.UserRequestBurst = 1
 	cfg.GlobalRequestLimit = 2
@@ -220,7 +215,6 @@ func TestChatterGlobalRejectionDoesNotConsumeUserToken(t *testing.T) {
 
 func TestChatterForgetsInactiveUserLimiters(t *testing.T) {
 	cfg := testChatterConfig()
-	cfg.RateLimitWindow = time.Hour
 	chatter := New(cfg, localization.New(localization.English), nil, nil, nil, nil, nil)
 	now := time.Now()
 
@@ -318,7 +312,6 @@ func testChatterConfig() Config {
 		Name:               "Martie",
 		DiscussionChatID:   100,
 		AllowedUserIDs:     []int64{10},
-		RateLimitWindow:    time.Hour,
 		UserRequestLimit:   25,
 		UserRequestBurst:   2,
 		GlobalRequestLimit: 100,
@@ -447,41 +440,6 @@ func TestChatterHandleAddsPtchanContextWithoutStoringIt(t *testing.T) {
 	key := conversationKey{chatID: chatter.cfg.DiscussionChatID, threadID: request.MessageThreadID}
 	if got := chatter.history[key].exchanges[0].userText; got != request.Text {
 		t.Fatalf("stored user text = %q, want original request", got)
-	}
-}
-
-func TestChatterHandleDumpsExactModelRequestAndStoredState(t *testing.T) {
-	chatter := testChatterHandler(&fakeCompleter{
-		completion: deepseek.Completion{Text: "answer", FinishReason: deepseek.FinishStop},
-	}, &fakeSender{})
-	chatter.ptchan = testPtchanContextSource(&fakePtchanFetcher{
-		thread: gateway.Thread{Board: "i", ThreadID: 303160, Posts: []gateway.Post{{Board: "i", ThreadID: 303160, PostID: 303160, Message: "external op"}}},
-	})
-	dir := t.TempDir()
-	chatter.traces = assistantpkg.NewTraceDumper(assistantpkg.TraceConfig{Enabled: true, Dir: dir, MaxFiles: 100})
-
-	chatter.handle(context.Background(), Request{
-		MessageID:       42,
-		MessageThreadID: 7,
-		UserID:          10,
-		Text:            "explain https://ptchan.org/i/thread/303160.html",
-	})
-
-	files, err := filepath.Glob(filepath.Join(dir, "martie-chatter-*.trace"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("trace files = %v, error = %v", files, err)
-	}
-	contents, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatalf("read trace: %v", err)
-	}
-	trace := string(contents)
-	if !strings.Contains(trace, "MODEL REQUEST") || !strings.Contains(trace, "external op") {
-		t.Fatalf("trace does not contain exact model context:\n%s", trace)
-	}
-	storedAfter := trace[strings.Index(trace, "STORED AFTER"):]
-	if strings.Contains(storedAfter, "external op") || !strings.Contains(storedAfter, "explain https://ptchan.org/i/thread/303160.html") {
-		t.Fatalf("stored state contains transient context or omits request:\n%s", storedAfter)
 	}
 }
 
@@ -731,28 +689,6 @@ func TestChatterRendersParticipantAliasesAtTelegramBoundary(t *testing.T) {
 	}
 }
 
-func TestAssistantMemoryLogUsesTokenizedMessages(t *testing.T) {
-	var output bytes.Buffer
-	chatter := testChatterHandler(&fakeCompleter{
-		completion: deepseek.Completion{Text: "Hello, @assistant_user_local_0001.", FinishReason: deepseek.FinishStop},
-	}, &fakeSender{})
-	chatter.cfg.LogMemory = true
-	chatter.logger = slog.New(slog.NewTextHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	chatter.handle(context.Background(), Request{UserID: 10, Username: "alice", Text: "hello"})
-
-	logs := output.String()
-	if !strings.Contains(logs, `msg="chatter memory system prompt" content="Be useful, reluctantly."`) ||
-		!strings.Contains(logs, `BEGIN TELEGRAM CONTEXT`) ||
-		!strings.Contains(logs, `Speaker: @assistant_user_local_0001`) ||
-		!strings.Contains(logs, `role=assistant content="Hello, @assistant_user_local_0001."`) {
-		t.Fatalf("memory log does not contain tokenized snapshots:\n%s", logs)
-	}
-	if strings.Contains(logs, "@alice") {
-		t.Fatalf("memory log contains rendered username:\n%s", logs)
-	}
-}
-
 func TestChatterNeutralizesUnknownParticipantAlias(t *testing.T) {
 	conversation := &conversation{}
 	conversation.participantAlias(10, "alice", "Alice")
@@ -889,17 +825,17 @@ func TestChatterReplyContextRemainsUserContent(t *testing.T) {
 }
 
 func TestChatterConversationExpiresAndStaysBounded(t *testing.T) {
-	chatter := testChatterHandler(&fakeCompleter{}, &fakeSender{})
+	cfg := testChatterConfig()
 	conversation := &conversation{}
 	now := time.Now()
 	long := strings.Repeat("x", historyMessageRunes+100)
 	alias := conversation.participantAlias(10, "alice", "Alice")
 
-	for range chatter.cfg.HistoryExchanges + 2 {
-		conversation.remember(alias, long, long, now, chatter.cfg.HistoryExchanges)
+	for range cfg.HistoryExchanges + 2 {
+		conversation.remember(alias, long, long, now, cfg.HistoryExchanges)
 	}
 	history := conversation.messages()
-	if len(conversation.exchanges) > chatter.cfg.HistoryExchanges || conversation.runes() > historyRuneLimit {
+	if len(conversation.exchanges) > cfg.HistoryExchanges || conversation.runes() > historyRuneLimit {
 		t.Fatalf("history exceeds bounds: exchanges=%d runes=%d", len(conversation.exchanges), conversation.runes())
 	}
 	for _, exchange := range conversation.exchanges {
@@ -912,37 +848,37 @@ func TestChatterConversationExpiresAndStaysBounded(t *testing.T) {
 			t.Fatalf("history user message is not structured: %q", message.Content)
 		}
 	}
-	conversation.expire(now.Add(chatter.cfg.ConversationTTL), chatter.cfg.ConversationTTL)
+	conversation.expire(now.Add(cfg.ConversationTTL), cfg.ConversationTTL)
 	if got := conversation.messages(); len(got) != 0 {
 		t.Fatalf("expired history = %+v, want empty", got)
 	}
 }
 
 func TestChatterEvictsOldestExchangeFirst(t *testing.T) {
-	chatter := testChatterHandler(&fakeCompleter{}, &fakeSender{})
+	cfg := testChatterConfig()
 	conversation := &conversation{}
 	now := time.Now()
 	alias := conversation.participantAlias(10, "alice", "Alice")
-	for i := range chatter.cfg.HistoryExchanges + 1 {
+	for i := range cfg.HistoryExchanges + 1 {
 		text := fmt.Sprintf("question %d", i)
-		conversation.remember(alias, text, "answer", now, chatter.cfg.HistoryExchanges)
+		conversation.remember(alias, text, "answer", now, cfg.HistoryExchanges)
 	}
 
 	exchanges := conversation.exchanges
-	if len(exchanges) != chatter.cfg.HistoryExchanges || exchanges[0].userText != "question 1" || exchanges[len(exchanges)-1].userText != "question 8" {
+	if len(exchanges) != cfg.HistoryExchanges || exchanges[0].userText != "question 1" || exchanges[len(exchanges)-1].userText != "question 8" {
 		t.Fatalf("rolling exchanges = %+v", exchanges)
 	}
 }
 
 func TestChatterExpiresOldExchangesIndividually(t *testing.T) {
-	chatter := testChatterHandler(&fakeCompleter{}, &fakeSender{})
+	cfg := testChatterConfig()
 	conversation := &conversation{}
 	now := time.Now()
 	alias := conversation.participantAlias(10, "alice", "Alice")
-	conversation.remember(alias, "old", "old answer", now.Add(-chatter.cfg.ConversationTTL), chatter.cfg.HistoryExchanges)
-	conversation.remember(alias, "current", "current answer", now.Add(-chatter.cfg.ConversationTTL+time.Second), chatter.cfg.HistoryExchanges)
+	conversation.remember(alias, "old", "old answer", now.Add(-cfg.ConversationTTL), cfg.HistoryExchanges)
+	conversation.remember(alias, "current", "current answer", now.Add(-cfg.ConversationTTL+time.Second), cfg.HistoryExchanges)
 
-	conversation.expire(now, chatter.cfg.ConversationTTL)
+	conversation.expire(now, cfg.ConversationTTL)
 	messages := conversation.messages()
 	if len(messages) != 2 || !strings.Contains(messages[0].Content, "current") {
 		t.Fatalf("current history = %+v, want only current exchange", messages)
@@ -974,11 +910,6 @@ func TestChatterConversationMetrics(t *testing.T) {
 	if got := metrics.activeConversations; got != 0 {
 		t.Fatalf("active conversations after expiry = %v, want 0", got)
 	}
-}
-
-func TestDiscardEmptyConversationIgnoresMissingKey(t *testing.T) {
-	chatter := testChatterHandler(&fakeCompleter{}, &fakeSender{})
-	chatter.discardEmptyConversation(conversationKey{chatID: 100, threadID: 7})
 }
 
 func TestChatterReplyToRejectionIsRateLimited(t *testing.T) {
@@ -1030,9 +961,9 @@ func testChatterHandler(completer Completer, sender Sender) *Assistant {
 		metrics:   newFakeMetrics(),
 		logger:    discardLogger(),
 		allowed:   map[int64]struct{}{10: {}},
-		global:    newRateLimiter(cfg.GlobalRequestLimit, cfg.RateLimitWindow, cfg.GlobalRequestBurst),
+		global:    hourlyRateLimiter(cfg.GlobalRequestLimit, cfg.GlobalRequestBurst),
 		users:     make(map[int64]userRateLimiter),
-		replies:   newRateLimiter(1, time.Hour, 1),
+		replies:   hourlyRateLimiter(1, 1),
 		history:   make(map[conversationKey]*conversation),
 		aliasSeed: defaultAliasSeed,
 	}
@@ -1047,7 +978,7 @@ func newFakeMetrics() *fakeMetrics {
 	return &fakeMetrics{contexts: make(map[string]int)}
 }
 
-func (*fakeMetrics) ObserveWorkerRun(string, time.Duration, error) {}
+func (*fakeMetrics) ObserveOperation(string, time.Duration, error) {}
 
 func (*fakeMetrics) ObserveAssistantAdmission(string, string) {}
 
@@ -1070,10 +1001,7 @@ func discardLogger() *slog.Logger {
 
 func testPtchanContextSource(fetcher assistantpkg.PtchanThreadReader) *assistantpkg.PtchanContext {
 	cfg := assistantpkg.PtchanContextConfig{
-		Enabled:    true,
 		BaseURL:    "https://ptchan.org",
-		GatewayURL: "http://gateway.test",
-		Timeout:    time.Second,
 		MaxReplies: 25,
 	}
 	return assistantpkg.NewPtchanContext(cfg, fetcher, discardLogger())

@@ -1,6 +1,7 @@
 # Language for user-visible output and completion context: "en" or "pt-PT".
 locale = "en"
-# Name used in assistant prompts and when attributing Martie's own replies.
+# Assistant name used in prompts and Telegram attribution. ptchan display names
+# and public tripcodes are configured on the corresponding gateway integration.
 name = "Martie"
 
 [ptchan]
@@ -8,13 +9,11 @@ name = "Martie"
 base_url = "https://ptchan.org"
 # ptchan-gateway base URL used for signed context and posting requests.
 gateway_url = "http://ptchan-gateway:8080"
-# Integration name configured in ptchan-gateway. The matching secret is read from
-# PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie" uses
-# PTCHAN_INTEGRATION_MARTIE_SECRET.
+# Integration name configured in ptchan-gateway. Give simultaneous dev and prod
+# identities separate integrations, public tripcodes, and secrets. The matching
+# secret is read from PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie"
+# uses PTCHAN_INTEGRATION_MARTIE_SECRET.
 integration_name = "martie"
-# Public tripcodes used by this assistant on ptchan. These are not secrets; they
-# label your prior assistant posts in fetched ptchan context.
-self_tripcodes = []
 
 # Uncomment only when split deployments use separate ptchan-gateway integrations.
 # [ptchan.chatter]
@@ -42,8 +41,6 @@ allow_all_users = false
 # anonymous, quote-oriented, and should be handled by `channer`.
 # Maximum Unicode characters accepted in one request.
 max_input_runes = 4096
-# Debug only: logs tokenized `chatter` history and message content.
-log_memory = false
 # Provider-facing personality and behavior. Replace this example in your
 # untracked config with the character, voice, boundaries, and response style you
 # want. Do not put Telegram or ptchan transcript-reading rules here; Martie
@@ -59,24 +56,16 @@ ttl = "10m"
 history_exchanges = 8
 
 [chatter.rate_limit]
-# Token-bucket refill period shared by the per-user and global limits.
-window = "60m"
-# Requests granted to each user per window and the maximum immediate burst.
+# Requests granted to each user per hour and the maximum immediate burst.
 user_limit = 25
 user_burst = 6
-# Requests granted across all users per window and the maximum immediate burst.
+# Requests granted across all users per hour and the maximum immediate burst.
 global_limit = 100
 global_burst = 12
 
-# Uncomment to let `chatter` read ptchan-gateway threads linked from Telegram.
-# [chatter.ptchan_context]
-# timeout = "5s"
-# max_replies = 25
-#
-# Uncomment only when actively debugging `chatter` prompts.
-# [chatter.trace]
-# dir = "data/traces"
-# max_files = 100
+[chatter.ptchan_context]
+# Render the OP when available plus this many focused or recent non-OP posts.
+max_replies = 25
 
 [channer]
 # The ptchan-native assistant surface is invoked by signed gateway post events
@@ -86,42 +75,36 @@ global_burst = 12
 mentions = ["@martie"]
 # Maximum Unicode characters accepted in one ptchan post request.
 max_input_runes = 4096
+# Retain the one-shot idempotency ledger for this long. Set to "0s" to disable pruning.
+prune_after = "720h"
 # Separate public-posting personality and behavior for ptchan replies.
 system_prompt = """
 You are {{name}}, a helpful conversational assistant replying publicly on ptchan.
 """
 
 [channer.rate_limit]
-# Public replies granted per window and maximum immediate burst. This is global
-# because ptchan posts are anonymous.
-window = "60m"
+# Public replies granted across all threads per hour and maximum immediate burst.
 request_limit = 25
 request_burst = 3
+# Public replies granted to one thread per hour and maximum immediate burst.
+thread_limit = 6
+thread_burst = 2
 
-# Delete this section to keep assistant-side ptchan context unavailable to `channer`.
 [channer.ptchan_context]
 # Read sanitized thread data from ptchan-gateway for the triggering thread/post.
-timeout = "5s"
 # Render the OP when available plus this many focused or recent non-OP posts.
 max_replies = 25
-
-# Uncomment only when actively debugging `channer` prompts.
-# [channer.trace]
-# dir = "data/traces"
-# max_files = 100
 
 [deepseek]
 # Completion model sent to DeepSeek.
 model = "deepseek-v4-flash"
 # Maximum tokens DeepSeek may generate for one response.
 max_tokens = 500
-# Deadline for one DeepSeek completion request.
-timeout = "60s"
 
 [gateway.webhook]
-# Address and path where Martie accepts signed gateway webhooks.
+# Address where Martie accepts signed gateway webhooks at the stable
+# /internal/ptchan/events path.
 addr = ":8081"
-path = "/internal/ptchan/events"
 
 [threadnotifier]
 # Notify after this many observed reply posts.
@@ -148,24 +131,9 @@ format = "text"
 # SQLite location shared by default.
 sqlite_path = "data/martie.db"
 
-# Uncomment only when an app needs a distinct SQLite lifecycle or privacy boundary.
-# [storage.chatter]
-# sqlite_path = "data/martie-chatter.db"
-#
-# [storage.channer]
-# sqlite_path = "data/martie-channer.db"
-#
-# [storage.threadnotifier]
-# sqlite_path = "data/martie-threadnotifier.db"
-#
-# [storage.streamnotifier]
-# sqlite_path = "data/martie-streamnotifier.db"
-
 [streamnotifier]
 # How often to probe configured streams.
 poll_interval = "1m"
-# Mark an active stream offline after this many consecutive 404 responses.
-end_miss_threshold = 2
 
 [[streamnotifier.channel]]
 # Stable storage key, URL used to detect liveness, and public link sent to Telegram.

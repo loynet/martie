@@ -12,9 +12,9 @@ import (
 )
 
 type ptchanContextGoldenMeta struct {
-	TargetPostID  int64    `json:"target_post_id"`
-	MaxReplies    int      `json:"max_replies"`
-	SelfTripcodes []string `json:"self_tripcodes"`
+	TargetPostID    int64  `json:"target_post_id"`
+	MaxReplies      int    `json:"max_replies"`
+	IntegrationName string `json:"integration_name"`
 }
 
 func TestPtchanContextGoldenFiles(t *testing.T) {
@@ -41,12 +41,12 @@ func TestPtchanContextGoldenFiles(t *testing.T) {
 			}
 
 			meta := readPtchanContextGoldenMeta(t, strings.TrimSuffix(fixture, filepath.Ext(fixture))+".meta")
-			cfg := PtchanContextConfig{MaxReplies: meta.MaxReplies, SelfTripcodes: meta.SelfTripcodes}
+			cfg := PtchanContextConfig{MaxReplies: meta.MaxReplies, IntegrationName: meta.IntegrationName}
 			if cfg.MaxReplies == 0 {
 				cfg.MaxReplies = DefaultMaxReplies
 			}
 
-			got := FormatPtchanContext(thread, meta.TargetPostID, cfg)
+			got := formatPtchanContext(thread, meta.TargetPostID, cfg)
 			golden := strings.TrimSuffix(fixture, filepath.Ext(fixture)) + ".golden"
 			if os.Getenv("MARTIE_UPDATE_GOLDEN") == "1" {
 				if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {

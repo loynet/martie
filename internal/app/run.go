@@ -9,9 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/time/rate"
 
 	channerapp "martie/internal/apps/channer"
 	channerstate "martie/internal/apps/channer/state"
@@ -44,10 +43,12 @@ func Run(
 	logger *slog.Logger,
 ) error {
 	metrics := newMetrics()
-	server, serverErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, logger.With("worker", "http"))
+	var ready atomic.Bool
+	server, serverErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, &ready, logger.With("worker", "http"))
 	if err != nil {
 		return err
 	}
+	defer ready.Store(false)
 	defer shutdownMetricsServer(server, logger)
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -62,15 +63,14 @@ func Run(
 			return err
 		}
 		streamNotifier := streamnotifierapp.Poller{
-			Channels:         cfg.StreamNotifier.Channels,
-			Format:           streamnotifierapp.NewFormatter(text),
-			EndMissThreshold: cfg.StreamNotifier.EndMissThreshold,
-			ChatID:           cfg.Telegram.NotificationChatID,
-			Store:            store,
-			Client:           streamClient,
-			Telegram:         telegramClient,
-			Metrics:          metrics,
-			Logger:           logger.With("worker", workerStreamNotifier),
+			Channels: cfg.StreamNotifier.Channels,
+			Format:   streamnotifierapp.NewFormatter(text),
+			ChatID:   cfg.Telegram.NotificationChatID,
+			Store:    store,
+			Client:   streamClient,
+			Telegram: telegramClient,
+			Metrics:  metrics,
+			Logger:   logger.With("worker", workerStreamNotifier),
 		}
 		workers = append(workers, pollingWorker(workerStreamNotifier, cfg.StreamNotifier.PollInterval, streamNotifier.Poll, metrics, logger))
 	case AppThreadNotifier:
@@ -80,7 +80,7 @@ func Run(
 		}
 		threadNotifier := &threadnotifierapp.Notifier{
 			Config:   cfg.ThreadNotifier,
-			Ptchan:   threadnotifierapp.PtchanConfig{BaseURL: cfg.Ptchan.BaseURL},
+			BaseURL:  cfg.Ptchan.BaseURL,
 			Format:   threadnotifierapp.NewFormatter(text),
 			ChatID:   cfg.Telegram.NotificationChatID,
 			Store:    store,
@@ -88,7 +88,9 @@ func Run(
 			Metrics:  metrics,
 			Logger:   logger.With("worker", workerThreadNotifier),
 		}
-		threadNotifier.SetNowFunc(time.Now)
+		if err := threadNotifier.Initialize(ctx); err != nil {
+			return err
+		}
 		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: workerThreadNotifier, consumer: threadNotifier})
 		workers = append(workers, worker{name: workerThreadNotifier, run: threadNotifier.Run})
 	case AppChatter:
@@ -96,24 +98,13 @@ func Run(
 		if err != nil {
 			return err
 		}
-		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens, cfg.DeepSeek.Timeout)
+		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens)
 		chatter := chatterapp.New(cfg.Chatter, text, store, telegramClient, completer, metrics, logger.With("worker", workerChatter))
 		chatter.SetModelName(cfg.DeepSeek.Model)
-		chatter.SetTraces(assistant.NewTraceDumper(cfg.Chatter.Trace))
-		var threadReader assistant.PtchanThreadReader
-		if cfg.Chatter.PtchanContext.Enabled {
-			client := gateway.NewClient(
-				cfg.Chatter.PtchanContext.GatewayURL,
-				gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
-				cfg.Chatter.PtchanContext.Timeout,
-			)
-			checkCtx, cancel := context.WithTimeout(ctx, cfg.Chatter.PtchanContext.Timeout)
-			if err := client.CheckReachable(checkCtx); err != nil {
-				logger.Warn("ptchan gateway thread reader unreachable", "worker", workerChatter, "gateway_url", cfg.Chatter.PtchanContext.GatewayURL, "error", err)
-			}
-			cancel()
-			threadReader = client
-		}
+		threadReader := gateway.NewClient(
+			cfg.Ptchan.GatewayURL,
+			gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
+		)
 		chatter.SetPtchanContext(assistant.NewPtchanContext(cfg.Chatter.PtchanContext, threadReader, logger.With("worker", workerChatter, "context", "ptchan")))
 		workers = append(workers, worker{name: workerChatter, run: chatter.Run})
 	case AppChanner:
@@ -121,39 +112,27 @@ func Run(
 		if err != nil {
 			return err
 		}
-		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens, cfg.DeepSeek.Timeout)
+		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens)
 		client := gateway.NewClient(
 			cfg.Ptchan.GatewayURL,
 			gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
-			cfg.Channer.PtchanContext.Timeout,
 		)
-		var threadReader assistant.PtchanThreadReader
-		if cfg.Channer.PtchanContext.Enabled {
-			contextClient := gateway.NewClient(
-				cfg.Channer.PtchanContext.GatewayURL,
-				gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
-				cfg.Channer.PtchanContext.Timeout,
-			)
-			checkCtx, cancel := context.WithTimeout(ctx, cfg.Channer.PtchanContext.Timeout)
-			if err := contextClient.CheckReachable(checkCtx); err != nil {
-				logger.Warn("ptchan gateway thread reader unreachable", "worker", workerChanner, "gateway_url", cfg.Channer.PtchanContext.GatewayURL, "error", err)
-			}
-			cancel()
-			threadReader = contextClient
-		}
 		ptchanResponder := channerapp.Responder{
 			Config:    cfg.Channer,
 			Store:     store,
 			Completer: completer,
 			ModelName: cfg.DeepSeek.Model,
-			Ptchan:    assistant.NewPtchanContext(cfg.Channer.PtchanContext, threadReader, logger.With("worker", workerChanner, "context", "ptchan")),
+			Ptchan:    assistant.NewPtchanContext(cfg.Channer.PtchanContext, client, logger.With("worker", workerChanner, "context", "ptchan")),
 			Poster:    client,
-			Traces:    assistant.NewTraceDumper(cfg.Channer.Trace),
-			Limit:     newRateLimiter(cfg.Channer.RequestLimit, cfg.Channer.RateLimitWindow, cfg.Channer.RequestBurst),
-			Logger:    logger.With("worker", workerChanner),
-			Metrics:   metrics,
+			Limit: channerapp.NewLimiter(
+				cfg.Channer.RequestLimit,
+				cfg.Channer.RequestBurst,
+				cfg.Channer.ThreadRequestLimit,
+				cfg.Channer.ThreadRequestBurst,
+			),
+			Logger:  logger.With("worker", workerChanner),
+			Metrics: metrics,
 		}
-		ptchanResponder.SetNowFunc(time.Now)
 		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: workerChanner, consumer: ptchanResponder})
 		workers = append(workers, worker{name: workerChanner, run: ptchanResponder.Run})
 	default:
@@ -161,7 +140,7 @@ func Run(
 	}
 	if len(gatewayEventConsumers) > 0 {
 		server := gatewayEventServer{
-			cfg:       cfg.Gateway.Webhook,
+			addr:      cfg.GatewayAddr,
 			ptchan:    cfg.Ptchan,
 			consumers: gatewayEventConsumers,
 			logger:    logger.With("worker", workerGatewayEvents),
@@ -170,6 +149,7 @@ func Run(
 		}
 		workers = append(workers, worker{name: workerGatewayEvents, run: server.run})
 	}
+	ready.Store(true)
 	logger.Info("service starting", "app", cfg.App)
 
 	var group sync.WaitGroup
@@ -201,8 +181,11 @@ func pollingWorker(name WorkerName, interval time.Duration, poll func(context.Co
 			for {
 				startedAt := time.Now()
 				err := poll(ctx)
-				metrics.observeWorkerRun(string(name), time.Since(startedAt), err)
-				if err != nil && ctx.Err() == nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				metrics.ObserveOperation(string(name), time.Since(startedAt), err)
+				if err != nil {
 					logger.Warn("poll failed", "worker", name, "error", err)
 				}
 
@@ -216,11 +199,6 @@ func pollingWorker(name WorkerName, interval time.Duration, poll func(context.Co
 			}
 		},
 	}
-}
-
-func newRateLimiter(requests int, window time.Duration, burst int) *rate.Limiter {
-	refill := rate.Limit(float64(requests) / window.Seconds())
-	return rate.NewLimiter(refill, burst)
 }
 
 func supervise(ctx context.Context, worker worker, logger *slog.Logger) {
@@ -241,7 +219,7 @@ func supervise(ctx context.Context, worker worker, logger *slog.Logger) {
 	}
 }
 
-func startHTTPServer(addr string, metrics *metrics, logger *slog.Logger) (*http.Server, <-chan error, error) {
+func startHTTPServer(addr string, metrics *metrics, ready *atomic.Bool, logger *slog.Logger) (*http.Server, <-chan error, error) {
 	if addr == "" {
 		return nil, nil, nil
 	}
@@ -252,7 +230,7 @@ func startHTTPServer(addr string, metrics *metrics, logger *slog.Logger) (*http.
 	}
 
 	server := &http.Server{
-		Handler:           httpHandler(metrics),
+		Handler:           httpHandler(metrics, ready),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -267,10 +245,10 @@ func startHTTPServer(addr string, metrics *metrics, logger *slog.Logger) (*http.
 	return server, errors, nil
 }
 
-func httpHandler(metrics *metrics) http.Handler {
+func httpHandler(metrics *metrics, ready *atomic.Bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthHandler)
-	mux.HandleFunc("/readyz", healthHandler)
+	mux.HandleFunc("/readyz", readinessHandler(ready))
 	mux.Handle("/metrics", metrics.handler())
 	return mux
 }
@@ -278,6 +256,16 @@ func httpHandler(metrics *metrics) http.Handler {
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, "ok\n")
+}
+
+func readinessHandler(ready *atomic.Bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if ready == nil || !ready.Load() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		healthHandler(w, nil)
+	}
 }
 
 func CheckHealth(addr string) error {

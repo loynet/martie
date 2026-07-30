@@ -21,24 +21,15 @@ const (
 )
 
 type Event struct {
-	EventID       string
-	Status        EventStatus
-	Board         string
-	ThreadID      int64
-	PostID        int64
-	ReplyBoard    string
-	ReplyThreadID int64
-	ReplyPostID   int64
-	ErrorCode     string
-	ErrorMessage  string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-}
-
-type Reply struct {
-	Board    string
-	ThreadID int64
-	PostID   int64
+	EventID      string
+	Status       EventStatus
+	Board        string
+	ThreadID     int64
+	PostID       int64
+	ErrorCode    string
+	ErrorMessage string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type Store struct {
@@ -61,9 +52,6 @@ CREATE TABLE IF NOT EXISTS channer_events (
   board TEXT NOT NULL,
   thread_id INTEGER NOT NULL,
   post_id INTEGER NOT NULL,
-  reply_board TEXT NOT NULL DEFAULT '',
-  reply_thread_id INTEGER NOT NULL DEFAULT 0,
-  reply_post_id INTEGER NOT NULL DEFAULT 0,
   error_code TEXT NOT NULL DEFAULT '',
   error_message TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -84,23 +72,17 @@ INSERT OR IGNORE INTO channer_events (
   board,
   thread_id,
   post_id,
-  reply_board,
-  reply_thread_id,
-  reply_post_id,
   error_code,
   error_message,
   created_at,
   updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 `,
 		event.EventID,
 		event.Status,
 		event.Board,
 		event.ThreadID,
 		event.PostID,
-		event.ReplyBoard,
-		event.ReplyThreadID,
-		event.ReplyPostID,
 		event.ErrorCode,
 		event.ErrorMessage,
 		storage.FormatTime(event.CreatedAt),
@@ -154,16 +136,13 @@ WHERE event_id = ? AND status = ?;
 	return requireAffected(result, "channer event posting")
 }
 
-func (s *Store) MarkEventPosted(ctx context.Context, eventID string, reply Reply, now time.Time) error {
+func (s *Store) MarkEventPosted(ctx context.Context, eventID string, now time.Time) error {
 	result, err := s.db.ExecContext(ctx, `
 UPDATE channer_events
-SET status = ?, reply_board = ?, reply_thread_id = ?, reply_post_id = ?, error_code = '', error_message = '', updated_at = ?
+SET status = ?, error_code = '', error_message = '', updated_at = ?
 WHERE event_id = ? AND status = ?;
 `,
 		EventPosted,
-		reply.Board,
-		reply.ThreadID,
-		reply.PostID,
 		storage.FormatTime(now),
 		eventID,
 		EventPosting,
@@ -172,24 +151,6 @@ WHERE event_id = ? AND status = ?;
 		return fmt.Errorf("mark channer event posted: %w", err)
 	}
 	return requireAffected(result, "channer event posted")
-}
-
-func (s *Store) PostedReplyExists(ctx context.Context, board string, threadID, postID int64) (bool, error) {
-	const query = `
-SELECT 1
-FROM channer_events
-WHERE status = ? AND reply_board = ? AND reply_thread_id = ? AND reply_post_id = ?
-LIMIT 1;
-`
-	var found int
-	err := s.db.QueryRowContext(ctx, query, EventPosted, board, threadID, postID).Scan(&found)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("query channer posted reply: %w", err)
-	}
-	return true, nil
 }
 
 func (s *Store) MarkEventFailed(ctx context.Context, eventID, code, message string, now time.Time) error {
@@ -244,7 +205,7 @@ func requireAffected(result sql.Result, action string) error {
 
 func (s *Store) GetEvent(ctx context.Context, eventID string) (Event, bool, error) {
 	const query = `
-SELECT event_id, status, board, thread_id, post_id, reply_board, reply_thread_id, reply_post_id, error_code, error_message, created_at, updated_at
+SELECT event_id, status, board, thread_id, post_id, error_code, error_message, created_at, updated_at
 FROM channer_events
 WHERE event_id = ?;
 `
@@ -286,9 +247,6 @@ func scanEvent(scanner eventScanner) (Event, error) {
 		&event.Board,
 		&event.ThreadID,
 		&event.PostID,
-		&event.ReplyBoard,
-		&event.ReplyThreadID,
-		&event.ReplyPostID,
 		&event.ErrorCode,
 		&event.ErrorMessage,
 		&createdRaw,

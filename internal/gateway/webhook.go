@@ -2,34 +2,35 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 )
 
 const MaxWebhookClockSkew = 5 * time.Minute
 
+var ErrWebhookAuthentication = errors.New("ptchan gateway webhook authentication failed")
+
 func VerifyWebhookBody(secret, eventID, timestamp, gotSignature string, body []byte, now time.Time) (*WebhookEvent, error) {
 	if strings.TrimSpace(secret) == "" {
-		return nil, fmt.Errorf("ptchan gateway webhook: secret is empty")
+		return nil, fmt.Errorf("%w: secret is empty", ErrWebhookAuthentication)
 	}
 	if eventID == "" || timestamp == "" || gotSignature == "" {
-		return nil, fmt.Errorf("ptchan gateway webhook: missing signature headers")
+		return nil, fmt.Errorf("%w: missing signature headers", ErrWebhookAuthentication)
 	}
 	observed, err := time.Parse(time.RFC3339, timestamp)
 	if err != nil {
-		return nil, fmt.Errorf("ptchan gateway webhook: bad timestamp: %w", err)
+		return nil, fmt.Errorf("%w: bad timestamp: %v", ErrWebhookAuthentication, err)
 	}
 	if skew := now.Sub(observed); skew > MaxWebhookClockSkew || skew < -MaxWebhookClockSkew {
-		return nil, fmt.Errorf("ptchan gateway webhook: timestamp is outside allowed skew")
+		return nil, fmt.Errorf("%w: timestamp is outside allowed skew", ErrWebhookAuthentication)
 	}
 	if !validSignature(gotSignature, webhookSignature(secret, timestamp, body)) {
-		return nil, fmt.Errorf("ptchan gateway webhook: bad signature")
+		return nil, fmt.Errorf("%w: bad signature", ErrWebhookAuthentication)
 	}
 
-	event, err := DecodeWebhookEvent(body)
+	event, err := decodeWebhookEvent(body)
 	if err != nil {
 		return nil, err
 	}
@@ -39,23 +40,7 @@ func VerifyWebhookBody(secret, eventID, timestamp, gotSignature string, body []b
 	return event, nil
 }
 
-func VerifyWebhook(r *http.Request, secret string, now time.Time) (*WebhookEvent, error) {
-	body, err := readWebhookBody(r)
-	if err != nil {
-		return nil, err
-	}
-	return VerifyWebhookBody(secret, r.Header.Get(headerEventID), r.Header.Get(headerTimestamp), r.Header.Get(headerSignature), body, now)
-}
-
-func readWebhookBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("ptchan gateway webhook: read body: %w", err)
-	}
-	return body, nil
-}
-
-func DecodeWebhookEvent(body []byte) (*WebhookEvent, error) {
+func decodeWebhookEvent(body []byte) (*WebhookEvent, error) {
 	var event WebhookEvent
 	if err := json.Unmarshal(body, &event); err != nil {
 		return nil, fmt.Errorf("ptchan gateway webhook: decode event: %w", err)
@@ -63,14 +48,20 @@ func DecodeWebhookEvent(body []byte) (*WebhookEvent, error) {
 	if event.EventID == "" {
 		return nil, fmt.Errorf("ptchan gateway webhook: event_id is required")
 	}
-	if event.Kind != ThreadCreated && event.Kind != PostCreated {
-		return nil, fmt.Errorf("ptchan gateway webhook: unsupported event kind %q", event.Kind)
+	if event.SchemaVersion != SchemaV1 {
+		return nil, fmt.Errorf("ptchan gateway webhook: unsupported schema_version %q", event.SchemaVersion)
+	}
+	if event.Kind == "" {
+		return nil, fmt.Errorf("ptchan gateway webhook: kind is required")
+	}
+	if event.Source == "" {
+		return nil, fmt.Errorf("ptchan gateway webhook: source is required")
 	}
 	if event.ObservedAt.IsZero() {
 		return nil, fmt.Errorf("ptchan gateway webhook: observed_at is required")
 	}
-	if event.Post.Board == "" || event.Post.ThreadID <= 0 || event.Post.PostID <= 0 {
-		return nil, fmt.Errorf("ptchan gateway webhook: post coordinates are required")
+	if err := validatePost(event.Post); err != nil {
+		return nil, fmt.Errorf("ptchan gateway webhook: invalid post: %w", err)
 	}
 	return &event, nil
 }

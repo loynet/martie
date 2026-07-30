@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -10,6 +11,15 @@ func TruncateRunes(text string, limit int) string {
 		return text
 	}
 	return string([]rune(text)[:limit-1]) + "…"
+}
+
+func StripUnsafeControls(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, text)
 }
 
 func WriteFencedBlock(b *strings.Builder, info, body string) {

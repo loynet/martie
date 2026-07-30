@@ -14,10 +14,9 @@ import (
 type metrics struct {
 	registry *prometheus.Registry
 
-	workerRuns             *prometheus.CounterVec
-	workerRunDuration      *prometheus.HistogramVec
-	workerLastRunSuccess   *prometheus.GaugeVec
-	workerLastRunTimestamp *prometheus.GaugeVec
+	operationDuration      *prometheus.HistogramVec
+	operationLastSuccess   *prometheus.GaugeVec
+	operationLastCompleted *prometheus.GaugeVec
 
 	gatewayWebhooks *prometheus.CounterVec
 	gatewayEvents   *prometheus.CounterVec
@@ -29,7 +28,8 @@ type metrics struct {
 	assistantContext             *prometheus.CounterVec
 	assistantActiveConversations *prometheus.GaugeVec
 
-	modelRequests *prometheus.CounterVec
+	channerOutcomes *prometheus.CounterVec
+
 	modelDuration *prometheus.HistogramVec
 	modelTokens   *prometheus.CounterVec
 }
@@ -39,68 +39,59 @@ const (
 	metricResultError   = "error"
 )
 
-const (
-	notificationSent   = "sent"
-	notificationFailed = "failed"
-)
-
 func newMetrics() *metrics {
 	m := &metrics{
 		registry: prometheus.NewRegistry(),
-		workerRuns: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_worker_runs_total",
-			Help: "Worker run attempts by result.",
-		}, []string{"worker", "result"}),
-		workerRunDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "martie_worker_run_duration_seconds",
-			Help:    "Worker run duration in seconds.",
+		operationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "martie_operation_duration_seconds",
+			Help:    "Duration of recurring operations by result.",
 			Buckets: prometheus.ExponentialBuckets(0.1, 2, 12),
-		}, []string{"worker"}),
-		workerLastRunSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "martie_worker_last_run_success",
-			Help: "Whether the last observed worker run succeeded.",
-		}, []string{"worker"}),
-		workerLastRunTimestamp: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "martie_worker_last_run_timestamp_seconds",
-			Help: "Unix timestamp of the last observed worker run.",
-		}, []string{"worker", "result"}),
+		}, []string{"operation", "result"}),
+		operationLastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "martie_operation_last_success",
+			Help: "Whether the last recurring operation succeeded.",
+		}, []string{"operation"}),
+		operationLastCompleted: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "martie_operation_last_completed_timestamp_seconds",
+			Help: "Unix timestamp when the recurring operation last completed.",
+		}, []string{"operation"}),
 		gatewayWebhooks: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_gateway_webhooks_total",
-			Help: "Signed ptchan-gateway webhook requests by result.",
+			Name: "martie_gateway_webhook_requests_total",
+			Help: "Incoming ptchan-gateway webhook requests by result.",
 		}, []string{"result"}),
 		gatewayEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_gateway_events_total",
-			Help: "Gateway events dispatched to consumers by consumer, kind, and result.",
+			Name: "martie_gateway_event_dispatches_total",
+			Help: "Gateway event dispatches by consumer, kind, and result.",
 		}, []string{"consumer", "kind", "result"}),
 		notifications: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_notifications_total",
-			Help: "Notification delivery attempts by source and result.",
+			Name: "martie_notification_delivery_attempts_total",
+			Help: "Telegram notification delivery attempts by source and result.",
 		}, []string{"source", "result"}),
 		assistantAdmissions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "martie_assistant_admissions_total",
 			Help: "Assistant input admission decisions by surface and result.",
 		}, []string{"surface", "result"}),
 		assistantReplies: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_assistant_replies_total",
+			Name: "martie_assistant_reply_deliveries_total",
 			Help: "Assistant reply delivery attempts by surface and result.",
 		}, []string{"surface", "result"}),
 		assistantContext: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_assistant_context_total",
-			Help: "Assistant requests that included a context source by surface and type.",
+			Name: "martie_assistant_context_uses_total",
+			Help: "Assistant requests that used a context source by surface and type.",
 		}, []string{"surface", "type"}),
 		assistantActiveConversations: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "martie_assistant_active_conversations",
 			Help: "In-memory conversations with unexpired history by surface.",
 		}, []string{"surface"}),
-		modelRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "martie_model_requests_total",
-			Help: "Model completion requests by surface, provider, model, result, and finish reason.",
-		}, []string{"surface", "provider", "model", "result", "finish_reason"}),
+		channerOutcomes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "martie_channer_requests_total",
+			Help: "Terminal outcomes for admitted channer requests.",
+		}, []string{"outcome"}),
 		modelDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "martie_model_request_duration_seconds",
-			Help:    "Model completion request duration in seconds.",
+			Name:    "martie_model_completion_duration_seconds",
+			Help:    "Model completion duration by outcome.",
 			Buckets: prometheus.ExponentialBuckets(0.5, 2, 10),
-		}, []string{"surface", "provider", "model"}),
+		}, []string{"surface", "provider", "model", "outcome"}),
 		modelTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "martie_model_tokens_total",
 			Help: "Model tokens by surface, provider, model, and token type.",
@@ -108,14 +99,9 @@ func newMetrics() *metrics {
 	}
 
 	m.registry.MustRegister(
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name: "martie_up",
-			Help: "Whether the martie process is running.",
-		}, func() float64 { return 1 }),
-		m.workerRuns,
-		m.workerRunDuration,
-		m.workerLastRunSuccess,
-		m.workerLastRunTimestamp,
+		m.operationDuration,
+		m.operationLastSuccess,
+		m.operationLastCompleted,
 		m.gatewayWebhooks,
 		m.gatewayEvents,
 		m.notifications,
@@ -123,7 +109,7 @@ func newMetrics() *metrics {
 		m.assistantReplies,
 		m.assistantContext,
 		m.assistantActiveConversations,
-		m.modelRequests,
+		m.channerOutcomes,
 		m.modelDuration,
 		m.modelTokens,
 	)
@@ -135,7 +121,7 @@ func (m *metrics) handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
-func (m *metrics) observeWorkerRun(worker string, duration time.Duration, err error) {
+func (m *metrics) ObserveOperation(operation string, duration time.Duration, err error) {
 	result := metricResultSuccess
 	success := 1.0
 	if err != nil {
@@ -143,14 +129,9 @@ func (m *metrics) observeWorkerRun(worker string, duration time.Duration, err er
 		success = 0
 	}
 
-	m.workerRuns.WithLabelValues(worker, result).Inc()
-	m.workerRunDuration.WithLabelValues(worker).Observe(duration.Seconds())
-	m.workerLastRunSuccess.WithLabelValues(worker).Set(success)
-	m.workerLastRunTimestamp.WithLabelValues(worker, result).SetToCurrentTime()
-}
-
-func (m *metrics) ObserveWorkerRun(worker string, duration time.Duration, err error) {
-	m.observeWorkerRun(worker, duration, err)
+	m.operationDuration.WithLabelValues(operation, result).Observe(duration.Seconds())
+	m.operationLastSuccess.WithLabelValues(operation).Set(success)
+	m.operationLastCompleted.WithLabelValues(operation).SetToCurrentTime()
 }
 
 func (m *metrics) observeGatewayWebhook(result string) {
@@ -161,12 +142,8 @@ func (m *metrics) observeGatewayEvent(consumer string, kind gateway.EventKind, r
 	m.gatewayEvents.WithLabelValues(consumer, string(kind), result).Inc()
 }
 
-func (m *metrics) observeNotification(source, result string) {
-	m.notifications.WithLabelValues(source, result).Inc()
-}
-
 func (m *metrics) ObserveNotification(source, result string) {
-	m.observeNotification(source, result)
+	m.notifications.WithLabelValues(source, result).Inc()
 }
 
 func (m *metrics) ObserveAssistantAdmission(surface, result string) {
@@ -185,13 +162,22 @@ func (m *metrics) SetActiveConversations(surface string, count int) {
 	m.assistantActiveConversations.WithLabelValues(surface).Set(float64(count))
 }
 
+func (m *metrics) ObserveChannerOutcome(outcome string) {
+	m.channerOutcomes.WithLabelValues(outcome).Inc()
+}
+
 func (m *metrics) ObserveModelCompletion(surface, provider, model string, duration time.Duration, completion deepseek.Completion, err error) {
-	m.modelDuration.WithLabelValues(surface, provider, model).Observe(duration.Seconds())
+	outcome := string(completion.FinishReason)
 	if err != nil {
-		m.modelRequests.WithLabelValues(surface, provider, model, metricResultError, "").Inc()
+		outcome = metricResultError
+	}
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	m.modelDuration.WithLabelValues(surface, provider, model, outcome).Observe(duration.Seconds())
+	if err != nil {
 		return
 	}
-	m.modelRequests.WithLabelValues(surface, provider, model, metricResultSuccess, string(completion.FinishReason)).Inc()
 	m.modelTokens.WithLabelValues(surface, provider, model, "input_cache_hit").Add(float64(completion.Usage.PromptCacheHitTokens))
 	m.modelTokens.WithLabelValues(surface, provider, model, "input_cache_miss").Add(float64(completion.Usage.PromptCacheMissTokens))
 	m.modelTokens.WithLabelValues(surface, provider, model, "output").Add(float64(completion.Usage.CompletionTokens))

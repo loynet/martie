@@ -11,17 +11,22 @@ import (
 	"time"
 )
 
+const (
+	requestTimeout   = 15 * time.Second
+	maxResponseBytes = 1 << 20
+)
+
 type Client struct {
 	BaseURL     string
 	Credentials Credentials
 	HTTPClient  *http.Client
 }
 
-func NewClient(baseURL string, credentials Credentials, timeout time.Duration) *Client {
+func NewClient(baseURL string, credentials Credentials) *Client {
 	return &Client{
 		BaseURL:     strings.TrimRight(baseURL, "/"),
 		Credentials: credentials,
-		HTTPClient:  &http.Client{Timeout: timeout},
+		HTTPClient:  &http.Client{Timeout: requestTimeout},
 	}
 }
 
@@ -34,6 +39,9 @@ func (c *Client) ReadThread(ctx context.Context, ref ThreadRef, limit int) (*Thr
 	var thread Thread
 	if err := c.do(ctx, http.MethodGet, path, nil, &thread); err != nil {
 		return nil, err
+	}
+	if err := validateThread(thread, ref); err != nil {
+		return nil, fmt.Errorf("ptchan gateway: invalid thread response: %w", err)
 	}
 	return &thread, nil
 }
@@ -54,17 +62,10 @@ func (c *Client) PostReply(ctx context.Context, ref ThreadRef, message string, s
 	if err := c.do(ctx, http.MethodPost, ref.path()+"/replies", body, &reply); err != nil {
 		return nil, err
 	}
-	if reply.Board == "" || reply.ThreadID <= 0 || reply.PostID <= 0 {
-		return nil, fmt.Errorf("ptchan gateway: reply response is missing coordinates")
+	if err := validateReplyResponse(reply, ref, c.Credentials.Name); err != nil {
+		return nil, fmt.Errorf("ptchan gateway: invalid reply response: %w", err)
 	}
 	return &reply, nil
-}
-
-func (c *Client) CheckReachable(ctx context.Context) error {
-	if err := c.do(ctx, http.MethodGet, "/healthz", nil, nil); err != nil {
-		return fmt.Errorf("check ptchan gateway health: %w", err)
-	}
-	return nil
 }
 
 type Error struct {
@@ -107,9 +108,12 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, out a
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(respBody) > maxResponseBytes {
+		return fmt.Errorf("ptchan gateway: response exceeds %d bytes", maxResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return decodeError(resp.StatusCode, respBody)
@@ -143,12 +147,74 @@ func decodeError(statusCode int, body []byte) error {
 		err.UpstreamStatus = envelope.Error.UpstreamStatus
 		return err
 	}
-	var legacy Error
-	if json.Unmarshal(body, &legacy) == nil {
-		err.Code = legacy.Code
-		err.Message = legacy.Message
-		err.Retryable = legacy.Retryable
-		err.UpstreamStatus = legacy.UpstreamStatus
-	}
 	return err
+}
+
+func validateThread(thread Thread, requested ThreadRef) error {
+	if thread.Board == "" || thread.ThreadID <= 0 {
+		return fmt.Errorf("board and thread_id are required")
+	}
+	if thread.ThreadRef() != requested {
+		return fmt.Errorf("coordinates do not match requested thread")
+	}
+	for i, post := range thread.Posts {
+		if err := validatePost(post); err != nil {
+			return fmt.Errorf("posts[%d]: %w", i, err)
+		}
+		if post.ThreadRef() != requested {
+			return fmt.Errorf("posts[%d]: coordinates do not match requested thread", i)
+		}
+		if i > 0 && post.Date.Before(thread.Posts[i-1].Date) {
+			return fmt.Errorf("posts are not chronological")
+		}
+	}
+	return nil
+}
+
+func validateReplyResponse(reply ReplyResponse, requested ThreadRef, integrationName string) error {
+	if reply.Board == "" || reply.ThreadID <= 0 || reply.PostID <= 0 || reply.URL == "" {
+		return fmt.Errorf("board, thread_id, post_id, and url are required")
+	}
+	if reply.Board != requested.Board || reply.ThreadID != requested.ThreadID {
+		return fmt.Errorf("coordinates do not match requested thread")
+	}
+	if err := validateOrigin(reply.Origin); err != nil {
+		return fmt.Errorf("origin: %w", err)
+	}
+	if reply.Origin.Name != strings.TrimSpace(integrationName) {
+		return fmt.Errorf("origin does not match requesting integration")
+	}
+	return nil
+}
+
+func validatePost(post Post) error {
+	if post.Board == "" || post.ThreadID <= 0 || post.PostID <= 0 || post.URL == "" || post.Date.IsZero() {
+		return fmt.Errorf("board, thread_id, post_id, url, and date are required")
+	}
+	if post.AttachmentCount < 0 {
+		return fmt.Errorf("attachment_count must be non-negative")
+	}
+	if post.Origin != nil {
+		if err := validateOrigin(*post.Origin); err != nil {
+			return fmt.Errorf("origin: %w", err)
+		}
+	}
+	for _, ref := range post.References {
+		if ref.Board == "" || ref.ThreadID <= 0 || ref.PostID <= 0 {
+			return fmt.Errorf("post references require board, thread_id, and post_id")
+		}
+	}
+	for _, ref := range post.ReferencedBy {
+		if ref.Board == "" || ref.ThreadID <= 0 || ref.PostID <= 0 {
+			return fmt.Errorf("post references require board, thread_id, and post_id")
+		}
+	}
+	return nil
+}
+
+func validateOrigin(origin PostOrigin) error {
+	if origin.Kind != IntegrationOrigin || origin.Name == "" {
+		return fmt.Errorf("kind must be %q and name is required", IntegrationOrigin)
+	}
+	return nil
 }

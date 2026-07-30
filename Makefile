@@ -46,14 +46,14 @@ ifneq ($(strip $(DOCKER_NETWORK)),)
 DOCKER_NETWORK_FLAGS = --network $(DOCKER_NETWORK)
 endif
 
-.PHONY: help fmt lint test tidy build run check-config docker-build docker-check-config docker-run docker-deploy docker-logs docker-traces docker-clean check clean
+.PHONY: help fmt lint test tidy build run check-config docker-build docker-check-config docker-run docker-deploy docker-logs docker-clean check clean
 
 help:
 	@printf '%s\n' \
 		'Targets: fmt lint test tidy build run check clean' \
 		'Check:   check-config validates config and selected app dependencies' \
 		'Apps:    MARTIE_APP=chatter, channer, threadnotifier, or streamnotifier' \
-		'Docker:  docker-build docker-check-config docker-run docker-deploy docker-logs docker-traces docker-clean' \
+		'Docker:  docker-build docker-check-config docker-run docker-deploy docker-logs docker-clean' \
 		'Config:  MARTIE_ENV=dev reads config/dev.toml and .env.dev' \
 		'Image:   IMAGE defaults to martie:$(IMAGE_TAG)' \
 		'Logs:    DOCKER_LOG_DRIVER=local or journald' \
@@ -113,10 +113,6 @@ docker-deploy: docker-build docker-check-config
 
 docker-logs:
 	$(DOCKER_LOG_COMMAND)
-
-docker-traces:
-	mkdir -p data
-	docker cp $(CONTAINER):/data/traces ./data
 
 docker-clean:
 	-docker rm -f martie-dev-chatter martie-prod-chatter martie-dev-channer martie-prod-channer martie-dev-threadnotifier martie-prod-threadnotifier martie-dev-streamnotifier martie-prod-streamnotifier

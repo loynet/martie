@@ -21,7 +21,7 @@ func TestThreadNotifierTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 
 	thread := gateway.WebhookEvent{
 		EventID: "ptchan:thread.created:i:100",
@@ -77,6 +77,9 @@ func TestThreadNotifierTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 	if len(sender.requests) != 1 {
 		t.Fatalf("notifications = %d, want 1", len(sender.requests))
 	}
+	if metrics := consumer.Metrics.(*fakeMetrics); metrics.results[NotificationSent] != 1 {
+		t.Fatalf("sent notification count = %d, want 1", metrics.results[NotificationSent])
+	}
 
 	record, ok, err := store.GetThread(context.Background(), "i:100")
 	if err != nil {
@@ -94,11 +97,21 @@ func TestThreadNotifierTracksRepliesAndNotifiesAtThreshold(t *testing.T) {
 	}
 }
 
+func TestThreadNotifierIgnoresFutureEventKinds(t *testing.T) {
+	notifier := &Notifier{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := notifier.ConsumeGatewayEvent(context.Background(), gateway.WebhookEvent{
+		EventID: "ptchan:post.updated:i:101",
+		Kind:    "post.updated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestThreadNotifierSerializesConcurrentEvents(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 	consumer.Config.MinReplyPosts = 1000
 
 	if err := consumer.ConsumeGatewayEvent(context.Background(), gateway.WebhookEvent{
@@ -150,7 +163,7 @@ func TestThreadNotifierWaitsForOPBeforeNotifying(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 
 	for _, id := range []int64{501, 502} {
 		if err := consumer.ConsumeGatewayEvent(context.Background(), gateway.WebhookEvent{
@@ -195,7 +208,7 @@ func TestThreadNotifierAppliesFiltersWhenOPArrivesLate(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 	consumer.Config.Filter.KeywordDenylist = []string{"blocked"}
 
 	for _, id := range []int64{601, 602} {
@@ -243,7 +256,7 @@ func TestThreadNotifierSuppressesFirstRunBacklogNotifications(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 	consumer.bootstrapAt = now
 	consumer.Config.MinReplyPosts = 1
 
@@ -278,7 +291,7 @@ func TestThreadNotifierBacklogDoesNotConsumeFutureNotification(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 	consumer.bootstrapAt = now
 	consumer.Config.MinReplyPosts = 1
 
@@ -339,7 +352,7 @@ func TestThreadNotifierStoresIgnoredThreads(t *testing.T) {
 	store := testStore(t)
 	sender := &fakeMessageSender{}
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
-	consumer := testThreadNotifier(store, sender, now)
+	consumer := testThreadNotifier(t, store, sender, now)
 	consumer.Config.Filter.KeywordDenylist = []string{"blocked"}
 
 	if err := consumer.ConsumeGatewayEvent(context.Background(), gateway.WebhookEvent{
@@ -394,10 +407,11 @@ func testStore(t *testing.T) *threadnotifierstate.Store {
 	return store
 }
 
-func testThreadNotifier(store *threadnotifierstate.Store, sender *fakeMessageSender, now time.Time) *Notifier {
+func testThreadNotifier(t *testing.T, store *threadnotifierstate.Store, sender *fakeMessageSender, now time.Time) *Notifier {
+	t.Helper()
 	consumer := Notifier{
 		Config:   Config{MinReplyPosts: 2},
-		Ptchan:   PtchanConfig{BaseURL: "https://ptchan.org"},
+		BaseURL:  "https://ptchan.org",
 		Format:   NewFormatter(localization.New(localization.English)),
 		ChatID:   123,
 		Store:    store,
@@ -406,7 +420,9 @@ func testThreadNotifier(store *threadnotifierstate.Store, sender *fakeMessageSen
 		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	consumer.SetNowFunc(func() time.Time { return now })
-	consumer.MarkBootstrapped(now)
+	if err := consumer.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	return &consumer
 }
 
@@ -419,6 +435,13 @@ func (f *fakeMessageSender) Send(_ context.Context, request telegram.SendRequest
 	return nil
 }
 
-type fakeMetrics struct{}
+type fakeMetrics struct {
+	results map[string]int
+}
 
-func (*fakeMetrics) ObserveNotification(string, string) {}
+func (f *fakeMetrics) ObserveNotification(_ string, result string) {
+	if f.results == nil {
+		f.results = make(map[string]int)
+	}
+	f.results[result]++
+}

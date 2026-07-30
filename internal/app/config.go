@@ -21,32 +21,24 @@ import (
 )
 
 type Config struct {
-	App                   AppName
-	Locale                localization.Locale
-	Ptchan                PtchanConfig
-	ChatterPtchan         PtchanConfig
-	ChannerPtchan         PtchanConfig
-	ThreadNotifierPtchan  PtchanConfig
-	Telegram              TelegramConfig
-	Chatter               chatterapp.Config
-	Channer               channerapp.Config
-	DeepSeek              DeepSeekConfig
-	Gateway               GatewayConfig
-	ThreadNotifier        threadnotifierapp.Config
-	StreamNotifier        streamnotifierapp.Config
-	Runtime               RuntimeConfig
-	Storage               StorageConfig
-	ChatterStorage        StorageConfig
-	ChannerStorage        StorageConfig
-	ThreadNotifierStorage StorageConfig
-	StreamNotifierStorage StorageConfig
+	App            AppName
+	Locale         localization.Locale
+	Ptchan         PtchanConfig
+	Telegram       TelegramConfig
+	Chatter        chatterapp.Config
+	Channer        channerapp.Config
+	DeepSeek       DeepSeekConfig
+	GatewayAddr    string
+	ThreadNotifier threadnotifierapp.Config
+	StreamNotifier streamnotifierapp.Config
+	Runtime        RuntimeConfig
+	SQLitePath     string
 }
 
 type PtchanConfig struct {
 	BaseURL         string
 	GatewayURL      string
 	IntegrationName string
-	SelfTripcodes   []string
 	Secret          string
 }
 
@@ -59,16 +51,6 @@ type DeepSeekConfig struct {
 	APIKey    string
 	Model     string
 	MaxTokens int
-	Timeout   time.Duration
-}
-
-type GatewayConfig struct {
-	Webhook GatewayWebhookConfig
-}
-
-type GatewayWebhookConfig struct {
-	Addr string
-	Path string
 }
 
 type RuntimeConfig struct {
@@ -107,10 +89,6 @@ const (
 	LogJSON LogFormat = "json"
 )
 
-type StorageConfig struct {
-	SQLitePath string
-}
-
 type fileConfig struct {
 	Locale         string                   `toml:"locale"`
 	Name           string                   `toml:"name"`
@@ -130,7 +108,6 @@ type filePtchanConfig struct {
 	BaseURL         string                      `toml:"base_url"`
 	GatewayURL      string                      `toml:"gateway_url"`
 	IntegrationName string                      `toml:"integration_name"`
-	SelfTripcodes   []string                    `toml:"self_tripcodes"`
 	Chatter         filePtchanIntegrationConfig `toml:"chatter"`
 	Channer         filePtchanIntegrationConfig `toml:"channer"`
 	ThreadNotifier  filePtchanIntegrationConfig `toml:"threadnotifier"`
@@ -149,37 +126,30 @@ type fileTelegramConfig struct {
 
 type fileChatterConfig struct {
 	MaxInputRunes int                 `toml:"max_input_runes"`
-	LogMemory     bool                `toml:"log_memory"`
 	SystemPrompt  string              `toml:"system_prompt"`
 	RateLimit     fileRateLimitConfig `toml:"rate_limit"`
 	Memory        fileMemoryConfig    `toml:"memory"`
-	PtchanContext *filePtchanContext  `toml:"ptchan_context"`
-	Trace         *fileAssistantTrace `toml:"trace"`
+	PtchanContext filePtchanContext   `toml:"ptchan_context"`
 }
 
 type fileChannerConfig struct {
 	Mentions      []string                   `toml:"mentions"`
 	MaxInputRunes int                        `toml:"max_input_runes"`
 	SystemPrompt  string                     `toml:"system_prompt"`
+	PruneAfter    string                     `toml:"prune_after"`
 	RateLimit     fileChannerRateLimitConfig `toml:"rate_limit"`
-	PtchanContext *filePtchanContext         `toml:"ptchan_context"`
-	Trace         *fileAssistantTrace        `toml:"trace"`
+	PtchanContext filePtchanContext          `toml:"ptchan_context"`
 }
 
 type fileChannerRateLimitConfig struct {
-	Window       string `toml:"window"`
-	RequestLimit int    `toml:"request_limit"`
-	RequestBurst int    `toml:"request_burst"`
-}
-
-type fileAssistantTrace struct {
-	Dir      *string `toml:"dir"`
-	MaxFiles *int    `toml:"max_files"`
+	RequestLimit       int `toml:"request_limit"`
+	RequestBurst       int `toml:"request_burst"`
+	ThreadRequestLimit int `toml:"thread_limit"`
+	ThreadRequestBurst int `toml:"thread_burst"`
 }
 
 type filePtchanContext struct {
-	Timeout    *string `toml:"timeout"`
-	MaxReplies *int    `toml:"max_replies"`
+	MaxReplies int `toml:"max_replies"`
 }
 
 type fileMemoryConfig struct {
@@ -188,17 +158,15 @@ type fileMemoryConfig struct {
 }
 
 type fileRateLimitConfig struct {
-	Window      string `toml:"window"`
-	UserLimit   int    `toml:"user_limit"`
-	UserBurst   int    `toml:"user_burst"`
-	GlobalLimit int    `toml:"global_limit"`
-	GlobalBurst int    `toml:"global_burst"`
+	UserLimit   int `toml:"user_limit"`
+	UserBurst   int `toml:"user_burst"`
+	GlobalLimit int `toml:"global_limit"`
+	GlobalBurst int `toml:"global_burst"`
 }
 
 type fileDeepSeekConfig struct {
 	Model     string `toml:"model"`
 	MaxTokens int    `toml:"max_tokens"`
-	Timeout   string `toml:"timeout"`
 }
 
 type fileGatewayConfig struct {
@@ -207,7 +175,6 @@ type fileGatewayConfig struct {
 
 type fileGatewayWebhookConfig struct {
 	Addr string `toml:"addr"`
-	Path string `toml:"path"`
 }
 
 type fileThreadNotifierConfig struct {
@@ -224,14 +191,6 @@ type fileRuntimeConfig struct {
 }
 
 type fileStorageConfig struct {
-	SQLitePath     string               `toml:"sqlite_path"`
-	Chatter        fileAppStorageConfig `toml:"chatter"`
-	Channer        fileAppStorageConfig `toml:"channer"`
-	ThreadNotifier fileAppStorageConfig `toml:"threadnotifier"`
-	StreamNotifier fileAppStorageConfig `toml:"streamnotifier"`
-}
-
-type fileAppStorageConfig struct {
 	SQLitePath string `toml:"sqlite_path"`
 }
 
@@ -241,9 +200,8 @@ type fileLoggingConfig struct {
 }
 
 type fileStreamNotifierConfig struct {
-	EndMissThreshold int                `toml:"end_miss_threshold"`
-	PollInterval     string             `toml:"poll_interval"`
-	Channels         []fileStreamConfig `toml:"channel"`
+	PollInterval string             `toml:"poll_interval"`
+	Channels     []fileStreamConfig `toml:"channel"`
 }
 
 type fileStreamConfig struct {
@@ -266,8 +224,8 @@ func defaultFileConfig() fileConfig {
 				TTL:              "10m",
 				HistoryExchanges: 8,
 			},
+			PtchanContext: filePtchanContext{MaxReplies: assistant.DefaultMaxReplies},
 			RateLimit: fileRateLimitConfig{
-				Window:      "60m",
 				UserLimit:   25,
 				UserBurst:   6,
 				GlobalLimit: 100,
@@ -277,21 +235,24 @@ func defaultFileConfig() fileConfig {
 		Channer: fileChannerConfig{
 			Mentions:      []string{"@martie"},
 			MaxInputRunes: 4096,
+			PruneAfter:    "720h",
+			PtchanContext: filePtchanContext{
+				MaxReplies: assistant.DefaultMaxReplies,
+			},
 			RateLimit: fileChannerRateLimitConfig{
-				Window:       "60m",
-				RequestLimit: 25,
-				RequestBurst: 3,
+				RequestLimit:       25,
+				RequestBurst:       3,
+				ThreadRequestLimit: 6,
+				ThreadRequestBurst: 2,
 			},
 		},
 		DeepSeek: fileDeepSeekConfig{
 			Model:     "deepseek-v4-flash",
 			MaxTokens: 500,
-			Timeout:   "60s",
 		},
 		Gateway: fileGatewayConfig{
 			Webhook: fileGatewayWebhookConfig{
 				Addr: ":8081",
-				Path: "/internal/ptchan/events",
 			},
 		},
 		ThreadNotifier: fileThreadNotifierConfig{
@@ -306,11 +267,15 @@ func defaultFileConfig() fileConfig {
 			},
 		},
 		Storage:        fileStorageConfig{SQLitePath: "data/martie.db"},
-		StreamNotifier: fileStreamNotifierConfig{EndMissThreshold: 2, PollInterval: "60s"},
+		StreamNotifier: fileStreamNotifierConfig{PollInterval: "60s"},
 	}
 }
 
-func LoadConfig() (Config, error) {
+func LoadConfig(app AppName) (Config, error) {
+	if !validApp(app) {
+		return Config{}, fmt.Errorf("unknown app %q", app)
+	}
+
 	path := strings.TrimSpace(os.Getenv("CONFIG_FILE"))
 	if path == "" {
 		return Config{}, fmt.Errorf("CONFIG_FILE is required")
@@ -337,31 +302,34 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	chatterPtchanContext := assistantPtchanContextConfig(raw.Chatter.PtchanContext)
-	chatterTrace := assistantTraceConfig(raw.Chatter.Trace)
-	ptchanContext := assistantPtchanContextConfig(raw.Channer.PtchanContext)
-	ptchanTrace := assistantTraceConfig(raw.Channer.Trace)
-	basePtchan := PtchanConfig{
-		BaseURL:         strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
-		GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
-		IntegrationName: strings.TrimSpace(raw.Ptchan.IntegrationName),
-		SelfTripcodes:   cleanTripcodes(raw.Ptchan.SelfTripcodes),
+
+	var logging LoggingConfig
+	if err := logging.Level.UnmarshalText([]byte(strings.TrimSpace(raw.Runtime.Logging.Level))); err != nil {
+		return Config{}, fmt.Errorf("runtime.logging.level must be debug, info, warn, or error")
 	}
-	basePtchan.Secret = strings.TrimSpace(os.Getenv(integrationSecretEnv(basePtchan.IntegrationName)))
-	chatterPtchan := ptchanIntegrationConfig(basePtchan, raw.Ptchan.Chatter)
-	channerPtchan := ptchanIntegrationConfig(basePtchan, raw.Ptchan.Channer)
-	threadNotifierPtchan := ptchanIntegrationConfig(basePtchan, raw.Ptchan.ThreadNotifier)
+	logging.Format = LogFormat(strings.TrimSpace(raw.Runtime.Logging.Format))
+	if logging.Format != LogText && logging.Format != LogJSON {
+		return Config{}, fmt.Errorf("runtime.logging.format must be %q or %q", LogText, LogJSON)
+	}
+
 	cfg := Config{
-		Locale:               locale,
-		Ptchan:               basePtchan,
-		ChatterPtchan:        chatterPtchan,
-		ChannerPtchan:        channerPtchan,
-		ThreadNotifierPtchan: threadNotifierPtchan,
+		App:    app,
+		Locale: locale,
 		Telegram: TelegramConfig{
 			BotToken:           strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 			NotificationChatID: raw.Telegram.NotificationChatID,
 		},
-		Chatter: chatterapp.Config{
+		Runtime: RuntimeConfig{
+			HTTPAddr: strings.TrimSpace(raw.Runtime.HTTPAddr),
+			Logging:  logging,
+		},
+		SQLitePath: cleanPath(raw.Storage.SQLitePath),
+	}
+
+	switch app {
+	case AppChatter:
+		cfg.Ptchan = selectedPtchan(raw.Ptchan, raw.Ptchan.Chatter)
+		cfg.Chatter = chatterapp.Config{
 			Name:               strings.TrimSpace(raw.Name),
 			DiscussionChatID:   raw.Telegram.DiscussionChatID,
 			AllowAllUsers:      raw.Telegram.AllowAllUsers,
@@ -371,285 +339,87 @@ func LoadConfig() (Config, error) {
 			GlobalRequestLimit: raw.Chatter.RateLimit.GlobalLimit,
 			GlobalRequestBurst: raw.Chatter.RateLimit.GlobalBurst,
 			MaxInputRunes:      raw.Chatter.MaxInputRunes,
-			LogMemory:          raw.Chatter.LogMemory,
-			Trace: assistant.TraceConfig{
-				Enabled:  raw.Chatter.Trace != nil,
-				Dir:      filepath.Clean(strings.TrimSpace(chatterTrace.Dir)),
-				MaxFiles: chatterTrace.MaxFiles,
-			},
-			HistoryExchanges: raw.Chatter.Memory.HistoryExchanges,
+			HistoryExchanges:   raw.Chatter.Memory.HistoryExchanges,
 			PtchanContext: assistant.PtchanContextConfig{
-				Enabled:       raw.Chatter.PtchanContext != nil,
-				BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
-				GatewayURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
-				MaxReplies:    chatterPtchanContext.MaxReplies,
-				SelfTripcodes: cleanTripcodes(raw.Ptchan.SelfTripcodes),
+				BaseURL:         cfg.Ptchan.BaseURL,
+				IntegrationName: cfg.Ptchan.IntegrationName,
+				MaxReplies:      raw.Chatter.PtchanContext.MaxReplies,
 			},
-		},
-		Channer: channerapp.Config{
-			Name:          strings.TrimSpace(raw.Name),
-			Mentions:      cleanMentions(raw.Channer.Mentions),
-			MaxInputRunes: raw.Channer.MaxInputRunes,
-			RequestLimit:  raw.Channer.RateLimit.RequestLimit,
-			RequestBurst:  raw.Channer.RateLimit.RequestBurst,
-			Trace: assistant.TraceConfig{
-				Enabled:  raw.Channer.Trace != nil,
-				Dir:      filepath.Clean(strings.TrimSpace(ptchanTrace.Dir)),
-				MaxFiles: ptchanTrace.MaxFiles,
-			},
+		}
+		cfg.Chatter.SystemPrompt = systemPrompt(raw.Chatter.SystemPrompt, cfg.Chatter.Name)
+		if cfg.Chatter.ConversationTTL, err = positiveDuration("chatter.memory.ttl", raw.Chatter.Memory.TTL); err != nil {
+			return Config{}, err
+		}
+		cfg.DeepSeek = deepSeekConfig(raw.DeepSeek)
+
+	case AppChanner:
+		cfg.Ptchan = selectedPtchan(raw.Ptchan, raw.Ptchan.Channer)
+		cfg.Channer = channerapp.Config{
+			Name:               strings.TrimSpace(raw.Name),
+			Mentions:           cleanMentions(raw.Channer.Mentions),
+			MaxInputRunes:      raw.Channer.MaxInputRunes,
+			RequestLimit:       raw.Channer.RateLimit.RequestLimit,
+			RequestBurst:       raw.Channer.RateLimit.RequestBurst,
+			ThreadRequestLimit: raw.Channer.RateLimit.ThreadRequestLimit,
+			ThreadRequestBurst: raw.Channer.RateLimit.ThreadRequestBurst,
 			PtchanContext: assistant.PtchanContextConfig{
-				Enabled:       raw.Channer.PtchanContext != nil,
-				BaseURL:       strings.TrimRight(strings.TrimSpace(raw.Ptchan.BaseURL), "/"),
-				GatewayURL:    strings.TrimRight(strings.TrimSpace(raw.Ptchan.GatewayURL), "/"),
-				MaxReplies:    ptchanContext.MaxReplies,
-				SelfTripcodes: cleanTripcodes(raw.Ptchan.SelfTripcodes),
+				BaseURL:         cfg.Ptchan.BaseURL,
+				IntegrationName: cfg.Ptchan.IntegrationName,
+				MaxReplies:      raw.Channer.PtchanContext.MaxReplies,
 			},
-		},
-		DeepSeek: DeepSeekConfig{
-			APIKey:    strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")),
-			Model:     strings.TrimSpace(raw.DeepSeek.Model),
-			MaxTokens: raw.DeepSeek.MaxTokens,
-		},
-		Gateway: GatewayConfig{
-			Webhook: GatewayWebhookConfig{
-				Addr: strings.TrimSpace(raw.Gateway.Webhook.Addr),
-				Path: cleanGatewayPath(raw.Gateway.Webhook.Path),
-			},
-		},
-		ThreadNotifier: threadnotifierapp.Config{
+		}
+		cfg.Channer.SystemPrompt = systemPrompt(raw.Channer.SystemPrompt, cfg.Channer.Name)
+		if cfg.Channer.PruneAfter, err = nonNegativeDuration("channer.prune_after", raw.Channer.PruneAfter); err != nil {
+			return Config{}, err
+		}
+		cfg.DeepSeek = deepSeekConfig(raw.DeepSeek)
+		cfg.GatewayAddr = gatewayAddr(raw.Gateway)
+
+	case AppThreadNotifier:
+		cfg.Ptchan = selectedPtchan(raw.Ptchan, raw.Ptchan.ThreadNotifier)
+		cfg.GatewayAddr = gatewayAddr(raw.Gateway)
+		cfg.ThreadNotifier = threadnotifierapp.Config{
 			MinReplyPosts: raw.ThreadNotifier.MinReplyPosts,
 			Filter: threadnotifierapp.Filter{
 				BoardDenylist:   raw.ThreadNotifier.BoardDenylist,
 				KeywordDenylist: raw.ThreadNotifier.KeywordDenylist,
 			},
-		},
-		StreamNotifier:        streamnotifierapp.Config{EndMissThreshold: raw.StreamNotifier.EndMissThreshold},
-		Runtime:               RuntimeConfig{HTTPAddr: strings.TrimSpace(raw.Runtime.HTTPAddr)},
-		Storage:               StorageConfig{SQLitePath: cleanPath(raw.Storage.SQLitePath)},
-		ChatterStorage:        appStorageConfig(raw.Storage.Chatter),
-		ChannerStorage:        appStorageConfig(raw.Storage.Channer),
-		ThreadNotifierStorage: appStorageConfig(raw.Storage.ThreadNotifier),
-		StreamNotifierStorage: appStorageConfig(raw.Storage.StreamNotifier),
-	}
-
-	cfg.Chatter.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Chatter.SystemPrompt), "{{name}}", cfg.Chatter.Name)
-	cfg.Channer.SystemPrompt = strings.ReplaceAll(strings.TrimSpace(raw.Channer.SystemPrompt), "{{name}}", cfg.Channer.Name)
-	if cfg.Ptchan.BaseURL == "" {
-		return Config{}, fmt.Errorf("ptchan.base_url is required")
-	}
-	if cfg.Ptchan.GatewayURL == "" {
-		return Config{}, fmt.Errorf("ptchan.gateway_url is required")
-	}
-	if cfg.Ptchan.IntegrationName == "" {
-		return Config{}, fmt.Errorf("ptchan.integration_name is required")
-	}
-	if cfg.Chatter.MaxInputRunes <= 0 {
-		return Config{}, fmt.Errorf("chatter.max_input_runes must be positive")
-	}
-	if cfg.Chatter.HistoryExchanges <= 0 {
-		return Config{}, fmt.Errorf("chatter.memory.history_exchanges must be positive")
-	}
-	if cfg.Chatter.UserRequestLimit <= 0 || cfg.Chatter.UserRequestBurst <= 0 || cfg.Chatter.UserRequestBurst > cfg.Chatter.UserRequestLimit {
-		return Config{}, fmt.Errorf("chatter.rate_limit.user_burst must be positive and no greater than user_limit")
-	}
-	if cfg.Chatter.GlobalRequestLimit <= 0 || cfg.Chatter.GlobalRequestBurst <= 0 || cfg.Chatter.GlobalRequestBurst > cfg.Chatter.GlobalRequestLimit {
-		return Config{}, fmt.Errorf("chatter.rate_limit.global_burst must be positive and no greater than global_limit")
-	}
-	if cfg.Chatter.PtchanContext.MaxReplies <= 0 {
-		return Config{}, fmt.Errorf("chatter.ptchan_context.max_replies must be positive")
-	}
-	if cfg.Chatter.Trace.MaxFiles <= 0 {
-		return Config{}, fmt.Errorf("chatter.trace.max_files must be positive")
-	}
-	if cfg.Chatter.Trace.Enabled && cfg.Chatter.Trace.Dir == "." {
-		return Config{}, fmt.Errorf("chatter.trace.dir is required when enabled")
-	}
-	if cfg.Channer.MaxInputRunes <= 0 {
-		return Config{}, fmt.Errorf("channer.max_input_runes must be positive")
-	}
-	if len(cfg.Channer.Mentions) == 0 {
-		return Config{}, fmt.Errorf("channer.mentions requires at least one mention")
-	}
-	if cfg.Channer.RequestLimit <= 0 || cfg.Channer.RequestBurst <= 0 || cfg.Channer.RequestBurst > cfg.Channer.RequestLimit {
-		return Config{}, fmt.Errorf("channer.rate_limit.request_burst must be positive and no greater than request_limit")
-	}
-	if cfg.Channer.PtchanContext.MaxReplies <= 0 {
-		return Config{}, fmt.Errorf("channer.ptchan_context.max_replies must be positive")
-	}
-	if cfg.Channer.Trace.MaxFiles <= 0 {
-		return Config{}, fmt.Errorf("channer.trace.max_files must be positive")
-	}
-	if cfg.Channer.Trace.Enabled && cfg.Channer.Trace.Dir == "." {
-		return Config{}, fmt.Errorf("channer.trace.dir is required when enabled")
-	}
-	if cfg.DeepSeek.Model == "" {
-		return Config{}, fmt.Errorf("deepseek.model is required")
-	}
-	if cfg.DeepSeek.MaxTokens <= 0 {
-		return Config{}, fmt.Errorf("deepseek.max_tokens must be positive")
-	}
-	if cfg.Gateway.Webhook.Addr == "" {
-		return Config{}, fmt.Errorf("gateway.webhook.addr is required")
-	}
-	if cfg.Gateway.Webhook.Path == "" {
-		return Config{}, fmt.Errorf("gateway.webhook.path is required")
-	}
-	if cfg.ThreadNotifier.MinReplyPosts < 0 {
-		return Config{}, fmt.Errorf("threadnotifier.min_reply_posts must be non-negative")
-	}
-	if cfg.StreamNotifier.EndMissThreshold <= 0 {
-		return Config{}, fmt.Errorf("streamnotifier.end_miss_threshold must be positive")
-	}
-	if err := cfg.Runtime.Logging.Level.UnmarshalText([]byte(strings.TrimSpace(raw.Runtime.Logging.Level))); err != nil {
-		return Config{}, fmt.Errorf("runtime.logging.level must be debug, info, warn, or error")
-	}
-	cfg.Runtime.Logging.Format = LogFormat(strings.TrimSpace(raw.Runtime.Logging.Format))
-	if cfg.Runtime.Logging.Format != LogText && cfg.Runtime.Logging.Format != LogJSON {
-		return Config{}, fmt.Errorf("runtime.logging.format must be %q or %q", LogText, LogJSON)
-	}
-	streamKeys := make(map[string]struct{}, len(raw.StreamNotifier.Channels))
-	for i, stream := range raw.StreamNotifier.Channels {
-		stream.Key = strings.TrimSpace(stream.Key)
-		stream.ProbeURL = strings.TrimSpace(stream.ProbeURL)
-		stream.PageURL = strings.TrimSpace(stream.PageURL)
-		if stream.Key == "" || stream.ProbeURL == "" || stream.PageURL == "" {
-			return Config{}, fmt.Errorf("streamnotifier.channel[%d] requires key, probe_url, and page_url", i)
 		}
-		if _, exists := streamKeys[stream.Key]; exists {
-			return Config{}, fmt.Errorf("streamnotifier.channel key %q is duplicated", stream.Key)
+		if cfg.ThreadNotifier.Filter.MaxThreadAge, err = nonNegativeDuration("threadnotifier.max_thread_age", raw.ThreadNotifier.MaxThreadAge); err != nil {
+			return Config{}, err
 		}
-		streamKeys[stream.Key] = struct{}{}
-		cfg.StreamNotifier.Channels = append(cfg.StreamNotifier.Channels, probe.Channel(stream))
-	}
+		if cfg.ThreadNotifier.PruneAfter, err = nonNegativeDuration("threadnotifier.prune_after", raw.ThreadNotifier.PruneAfter); err != nil {
+			return Config{}, err
+		}
 
-	if cfg.Chatter.ConversationTTL, err = positiveDuration("chatter.memory.ttl", raw.Chatter.Memory.TTL); err != nil {
+	case AppStreamNotifier:
+		if cfg.StreamNotifier.PollInterval, err = positiveDuration("streamnotifier.poll_interval", raw.StreamNotifier.PollInterval); err != nil {
+			return Config{}, err
+		}
+		streamKeys := make(map[string]struct{}, len(raw.StreamNotifier.Channels))
+		for i, stream := range raw.StreamNotifier.Channels {
+			stream.Key = strings.TrimSpace(stream.Key)
+			stream.ProbeURL = strings.TrimSpace(stream.ProbeURL)
+			stream.PageURL = strings.TrimSpace(stream.PageURL)
+			if stream.Key == "" || stream.ProbeURL == "" || stream.PageURL == "" {
+				return Config{}, fmt.Errorf("streamnotifier.channel[%d] requires key, probe_url, and page_url", i)
+			}
+			if _, exists := streamKeys[stream.Key]; exists {
+				return Config{}, fmt.Errorf("streamnotifier.channel key %q is duplicated", stream.Key)
+			}
+			streamKeys[stream.Key] = struct{}{}
+			cfg.StreamNotifier.Channels = append(cfg.StreamNotifier.Channels, probe.Channel(stream))
+		}
+	}
+	if err := cfg.validateValues(); err != nil {
 		return Config{}, err
 	}
-	if cfg.Chatter.RateLimitWindow, err = positiveDuration("chatter.rate_limit.window", raw.Chatter.RateLimit.Window); err != nil {
-		return Config{}, err
-	}
-	if cfg.Chatter.PtchanContext.Timeout, err = positiveDuration("chatter.ptchan_context.timeout", chatterPtchanContext.Timeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.Channer.PtchanContext.Timeout, err = positiveDuration("channer.ptchan_context.timeout", ptchanContext.Timeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.Channer.RateLimitWindow, err = positiveDuration("channer.rate_limit.window", raw.Channer.RateLimit.Window); err != nil {
-		return Config{}, err
-	}
-	if cfg.DeepSeek.Timeout, err = positiveDuration("deepseek.timeout", raw.DeepSeek.Timeout); err != nil {
-		return Config{}, err
-	}
-	if cfg.StreamNotifier.PollInterval, err = positiveDuration("streamnotifier.poll_interval", raw.StreamNotifier.PollInterval); err != nil {
-		return Config{}, err
-	}
-	if cfg.ThreadNotifier.Filter.MaxThreadAge, err = nonNegativeDuration("threadnotifier.max_thread_age", raw.ThreadNotifier.MaxThreadAge); err != nil {
-		return Config{}, err
-	}
-	if cfg.ThreadNotifier.PruneAfter, err = nonNegativeDuration("threadnotifier.prune_after", raw.ThreadNotifier.PruneAfter); err != nil {
-		return Config{}, err
-	}
-	if cfg.Storage.SQLitePath == "" || cfg.Storage.SQLitePath == "." {
-		return Config{}, fmt.Errorf("storage.sqlite_path is required")
-	}
-	if cfg.ChatterStorage.SQLitePath == "." {
-		return Config{}, fmt.Errorf("storage.chatter.sqlite_path is required when set")
-	}
-	if cfg.ChannerStorage.SQLitePath == "." {
-		return Config{}, fmt.Errorf("storage.channer.sqlite_path is required when set")
-	}
-	if cfg.ThreadNotifierStorage.SQLitePath == "." {
-		return Config{}, fmt.Errorf("storage.threadnotifier.sqlite_path is required when set")
-	}
-	if cfg.StreamNotifierStorage.SQLitePath == "." {
-		return Config{}, fmt.Errorf("storage.streamnotifier.sqlite_path is required when set")
-	}
-	if cfg.ChatterStorage.SQLitePath == "" {
-		cfg.ChatterStorage = cfg.Storage
-	}
-	if cfg.ChannerStorage.SQLitePath == "" {
-		cfg.ChannerStorage = cfg.Storage
-	}
-	if cfg.ThreadNotifierStorage.SQLitePath == "" {
-		cfg.ThreadNotifierStorage = cfg.Storage
-	}
-	if cfg.StreamNotifierStorage.SQLitePath == "" {
-		cfg.StreamNotifierStorage = cfg.Storage
-	}
-
 	return cfg, nil
 }
 
-func assistantPtchanContextConfig(raw *filePtchanContext) ptchanContextFileConfig {
-	cfg := ptchanContextFileConfig{
-		Timeout:    "5s",
-		MaxReplies: assistant.DefaultMaxReplies,
-	}
-	if raw == nil {
-		return cfg
-	}
-	if raw.Timeout != nil {
-		cfg.Timeout = *raw.Timeout
-	}
-	if raw.MaxReplies != nil {
-		cfg.MaxReplies = *raw.MaxReplies
-	}
-	return cfg
-}
-
-type ptchanContextFileConfig struct {
-	Timeout    string
-	MaxReplies int
-}
-
-func assistantTraceConfig(raw *fileAssistantTrace) assistantTraceFileConfig {
-	cfg := assistantTraceFileConfig{Dir: "data/traces", MaxFiles: 100}
-	if raw == nil {
-		return cfg
-	}
-	if raw.Dir != nil {
-		cfg.Dir = *raw.Dir
-	}
-	if raw.MaxFiles != nil {
-		cfg.MaxFiles = *raw.MaxFiles
-	}
-	return cfg
-}
-
-type assistantTraceFileConfig struct {
-	Dir      string
-	MaxFiles int
-}
-
-func (c Config) ForApp(app AppName) (Config, error) {
-	switch app {
-	case AppChatter:
-		c.App = app
-		c.Ptchan = c.ChatterPtchan
-		c.Storage = c.ChatterStorage
-		return c, nil
-	case AppChanner:
-		c.App = app
-		c.Ptchan = c.ChannerPtchan
-		c.Storage = c.ChannerStorage
-		return c, nil
-	case AppThreadNotifier:
-		c.App = app
-		c.Ptchan = c.ThreadNotifierPtchan
-		c.Storage = c.ThreadNotifierStorage
-		return c, nil
-	case AppStreamNotifier:
-		c.App = app
-		c.Storage = c.StreamNotifierStorage
-		return c, nil
-	default:
-		return Config{}, fmt.Errorf("unknown app %q", app)
-	}
-}
-
 func (c Config) ValidateRun() error {
-	if c.App == "" {
-		return fmt.Errorf("app command is required")
+	if !validApp(c.App) {
+		return fmt.Errorf("unknown app %q", c.App)
 	}
 	if (c.App == AppThreadNotifier || c.App == AppStreamNotifier || c.App == AppChatter) && c.Telegram.BotToken == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
@@ -679,7 +449,7 @@ func (c Config) ValidateRun() error {
 		if c.DeepSeek.APIKey == "" {
 			return fmt.Errorf("DEEPSEEK_API_KEY is required for chatter")
 		}
-		if c.Chatter.PtchanContext.Enabled && c.Ptchan.Secret == "" {
+		if c.Ptchan.Secret == "" {
 			return fmt.Errorf("%s is required for chatter ptchan context", integrationSecretEnv(c.Ptchan.IntegrationName))
 		}
 	}
@@ -715,19 +485,129 @@ func ParseAppName(value string) (AppName, error) {
 	}
 }
 
-func ptchanIntegrationConfig(base PtchanConfig, raw filePtchanIntegrationConfig) PtchanConfig {
-	name := strings.TrimSpace(raw.IntegrationName)
-	if name == "" {
-		return base
+func validApp(app AppName) bool {
+	switch app {
+	case AppChatter, AppChanner, AppThreadNotifier, AppStreamNotifier:
+		return true
+	default:
+		return false
 	}
-	cfg := base
-	cfg.IntegrationName = name
+}
+
+func selectedPtchan(raw filePtchanConfig, integration filePtchanIntegrationConfig) PtchanConfig {
+	name := strings.TrimSpace(integration.IntegrationName)
+	if name == "" {
+		name = strings.TrimSpace(raw.IntegrationName)
+	}
+	cfg := PtchanConfig{
+		BaseURL:         strings.TrimRight(strings.TrimSpace(raw.BaseURL), "/"),
+		GatewayURL:      strings.TrimRight(strings.TrimSpace(raw.GatewayURL), "/"),
+		IntegrationName: name,
+	}
 	cfg.Secret = strings.TrimSpace(os.Getenv(integrationSecretEnv(name)))
 	return cfg
 }
 
-func appStorageConfig(raw fileAppStorageConfig) StorageConfig {
-	return StorageConfig{SQLitePath: cleanPath(raw.SQLitePath)}
+func deepSeekConfig(raw fileDeepSeekConfig) DeepSeekConfig {
+	return DeepSeekConfig{
+		APIKey:    strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")),
+		Model:     strings.TrimSpace(raw.Model),
+		MaxTokens: raw.MaxTokens,
+	}
+}
+
+func gatewayAddr(raw fileGatewayConfig) string {
+	return strings.TrimSpace(raw.Webhook.Addr)
+}
+
+func systemPrompt(prompt, name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(prompt), "{{name}}", name)
+}
+
+func (c Config) validateValues() error {
+	if c.SQLitePath == "" || c.SQLitePath == "." {
+		return fmt.Errorf("storage.sqlite_path is required")
+	}
+	switch c.App {
+	case AppChatter:
+		if c.Chatter.MaxInputRunes <= 0 {
+			return fmt.Errorf("chatter.max_input_runes must be positive")
+		}
+		if c.Chatter.HistoryExchanges <= 0 {
+			return fmt.Errorf("chatter.memory.history_exchanges must be positive")
+		}
+		if c.Chatter.UserRequestLimit <= 0 || c.Chatter.UserRequestBurst <= 0 || c.Chatter.UserRequestBurst > c.Chatter.UserRequestLimit {
+			return fmt.Errorf("chatter.rate_limit.user_burst must be positive and no greater than user_limit")
+		}
+		if c.Chatter.GlobalRequestLimit <= 0 || c.Chatter.GlobalRequestBurst <= 0 || c.Chatter.GlobalRequestBurst > c.Chatter.GlobalRequestLimit {
+			return fmt.Errorf("chatter.rate_limit.global_burst must be positive and no greater than global_limit")
+		}
+		if c.Chatter.PtchanContext.MaxReplies <= 0 {
+			return fmt.Errorf("chatter.ptchan_context.max_replies must be positive")
+		}
+		if c.DeepSeek.Model == "" {
+			return fmt.Errorf("deepseek.model is required")
+		}
+		if c.DeepSeek.MaxTokens <= 0 {
+			return fmt.Errorf("deepseek.max_tokens must be positive")
+		}
+		return validatePtchan(c.Ptchan, true)
+	case AppChanner:
+		if c.Channer.MaxInputRunes <= 0 {
+			return fmt.Errorf("channer.max_input_runes must be positive")
+		}
+		if len(c.Channer.Mentions) == 0 {
+			return fmt.Errorf("channer.mentions requires at least one mention")
+		}
+		if c.Channer.RequestLimit <= 0 || c.Channer.RequestBurst <= 0 || c.Channer.RequestBurst > c.Channer.RequestLimit {
+			return fmt.Errorf("channer.rate_limit.request_burst must be positive and no greater than request_limit")
+		}
+		if c.Channer.ThreadRequestLimit <= 0 || c.Channer.ThreadRequestBurst <= 0 || c.Channer.ThreadRequestBurst > c.Channer.ThreadRequestLimit {
+			return fmt.Errorf("channer.rate_limit.thread_burst must be positive and no greater than thread_limit")
+		}
+		if c.Channer.PtchanContext.MaxReplies <= 0 {
+			return fmt.Errorf("channer.ptchan_context.max_replies must be positive")
+		}
+		if c.DeepSeek.Model == "" {
+			return fmt.Errorf("deepseek.model is required")
+		}
+		if c.DeepSeek.MaxTokens <= 0 {
+			return fmt.Errorf("deepseek.max_tokens must be positive")
+		}
+		if err := validatePtchan(c.Ptchan, true); err != nil {
+			return err
+		}
+		return validateGatewayAddr(c.GatewayAddr)
+	case AppThreadNotifier:
+		if c.ThreadNotifier.MinReplyPosts < 0 {
+			return fmt.Errorf("threadnotifier.min_reply_posts must be non-negative")
+		}
+		if err := validatePtchan(c.Ptchan, false); err != nil {
+			return err
+		}
+		return validateGatewayAddr(c.GatewayAddr)
+	}
+	return nil
+}
+
+func validatePtchan(cfg PtchanConfig, gatewayRequired bool) error {
+	if cfg.BaseURL == "" {
+		return fmt.Errorf("ptchan.base_url is required")
+	}
+	if gatewayRequired && cfg.GatewayURL == "" {
+		return fmt.Errorf("ptchan.gateway_url is required")
+	}
+	if cfg.IntegrationName == "" {
+		return fmt.Errorf("ptchan.integration_name is required")
+	}
+	return nil
+}
+
+func validateGatewayAddr(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("gateway.webhook.addr is required")
+	}
+	return nil
 }
 
 func cleanPath(path string) string {
@@ -751,14 +631,6 @@ func integrationSecretEnv(name string) string {
 	return "PTCHAN_INTEGRATION_" + normalized + "_SECRET"
 }
 
-func cleanGatewayPath(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" || strings.HasPrefix(path, "/") {
-		return path
-	}
-	return "/" + path
-}
-
 func cleanMentions(values []string) []string {
 	mentions := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
@@ -775,23 +647,6 @@ func cleanMentions(values []string) []string {
 		mentions = append(mentions, mention)
 	}
 	return mentions
-}
-
-func cleanTripcodes(values []string) []string {
-	tripcodes := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		tripcode := strings.TrimSpace(value)
-		if tripcode == "" {
-			continue
-		}
-		if _, ok := seen[tripcode]; ok {
-			continue
-		}
-		seen[tripcode] = struct{}{}
-		tripcodes = append(tripcodes, tripcode)
-	}
-	return tripcodes
 }
 
 func positiveDuration(name, value string) (time.Duration, error) {

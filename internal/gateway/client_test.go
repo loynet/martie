@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -163,18 +162,6 @@ func TestDecodeGatewayError(t *testing.T) {
 	}
 }
 
-func TestDecodeGatewayLegacyError(t *testing.T) {
-	err := decodeError(http.StatusBadGateway, []byte(`{"code":"reply_state_unknown","message":"check thread","retryable":false}`))
-
-	gatewayErr, ok := err.(*Error)
-	if !ok {
-		t.Fatalf("expected *Error, got %T", err)
-	}
-	if gatewayErr.Code != "reply_state_unknown" || gatewayErr.Retryable {
-		t.Fatalf("gateway error = %+v", gatewayErr)
-	}
-}
-
 func TestClientPostReplyRequiresCoordinates(t *testing.T) {
 	client := &Client{
 		BaseURL:     "http://gateway.test",
@@ -189,49 +176,32 @@ func TestClientPostReplyRequiresCoordinates(t *testing.T) {
 		})},
 	}
 
-	if _, err := client.PostReply(context.Background(), ThreadRef{Board: "i", ThreadID: 100}, "hello", false); err == nil || !strings.Contains(err.Error(), "coordinates") {
-		t.Fatalf("PostReply() error = %v, want coordinates error", err)
+	if _, err := client.PostReply(context.Background(), ThreadRef{Board: "i", ThreadID: 100}, "hello", false); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("PostReply() error = %v, want required fields error", err)
 	}
 }
 
-func TestClientCheckReachableUsesHealthEndpoint(t *testing.T) {
-	var gotPath string
+func TestClientRejectsOversizedResponse(t *testing.T) {
 	client := &Client{
 		BaseURL: "http://gateway.test",
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			gotPath = req.URL.Path
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
 				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("ok")),
+				Body:       io.NopCloser(strings.NewReader(strings.Repeat("x", maxResponseBytes+1))),
 			}, nil
 		})},
 	}
 
-	if err := client.CheckReachable(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if gotPath != "/healthz" {
-		t.Fatalf("health path = %q, want /healthz", gotPath)
-	}
-}
-
-func TestClientCheckReachableReportsRequestFailure(t *testing.T) {
-	client := &Client{
-		BaseURL: "http://gateway.test",
-		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return nil, errors.New("lookup failed")
-		})},
-	}
-
-	if err := client.CheckReachable(context.Background()); err == nil || !strings.Contains(err.Error(), "lookup failed") {
-		t.Fatalf("CheckReachable() error = %v, want send error", err)
+	if _, err := client.ReadThread(context.Background(), ThreadRef{Board: "i", ThreadID: 100}, 50); err == nil || !strings.Contains(err.Error(), "response exceeds") {
+		t.Fatalf("ReadThread() error = %v, want response size error", err)
 	}
 }
 
 func TestDecodeWebhookEvent(t *testing.T) {
-	event, err := DecodeWebhookEvent([]byte(`{
+	event, err := decodeWebhookEvent([]byte(`{
+		"schema_version": "1",
 		"event_id": "ptchan:post.created:i:101",
 		"kind": "post.created",
 		"source": "ptchan",
@@ -251,13 +221,70 @@ func TestDecodeWebhookEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event.Kind != PostCreated || event.Post.Board != "i" || event.Post.PostID != 101 || event.Post.Origin == nil || event.Post.Origin.Name != "martie" || len(event.Post.References) != 1 {
+	if event.SchemaVersion != SchemaV1 || event.Kind != PostCreated || event.Post.Board != "i" || event.Post.PostID != 101 || event.Post.Origin == nil || event.Post.Origin.Name != "martie" || len(event.Post.References) != 1 {
 		t.Fatalf("event = %+v", event)
 	}
 }
 
+func TestDecodeWebhookEventAcceptsFutureEventKind(t *testing.T) {
+	event, err := decodeWebhookEvent([]byte(`{
+		"schema_version": "1",
+		"event_id": "ptchan:post.updated:i:101",
+		"kind": "post.updated",
+		"source": "ptchan",
+		"observed_at": "2026-07-19T12:00:01Z",
+		"post": {
+			"board": "i",
+			"thread_id": 100,
+			"post_id": 101,
+			"url": "https://ptchan.test/i/thread/100.html#101",
+			"date": "2026-07-19T12:00:00Z",
+			"attachment_count": 0
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Kind != "post.updated" {
+		t.Fatalf("kind = %q", event.Kind)
+	}
+}
+
+func TestDecodeWebhookEventRequiresV1Schema(t *testing.T) {
+	body := []byte(`{
+		"event_id": "ptchan:post.created:i:101",
+		"kind": "post.created",
+		"source": "ptchan",
+		"observed_at": "2026-07-19T12:00:01Z",
+		"post": {
+			"board": "i",
+			"thread_id": 100,
+			"post_id": 101,
+			"url": "https://ptchan.test/i/thread/100.html#101",
+			"date": "2026-07-19T12:00:00Z",
+			"attachment_count": 0
+		}
+	}`)
+	if _, err := decodeWebhookEvent(body); err == nil || !strings.Contains(err.Error(), "schema_version") {
+		t.Fatalf("error = %v, want schema_version error", err)
+	}
+}
+
+func TestValidateReplyResponseMatchesRequestingIntegration(t *testing.T) {
+	reply := ReplyResponse{
+		Board:    "i",
+		ThreadID: 100,
+		PostID:   101,
+		URL:      "https://ptchan.test/i/thread/100.html#101",
+		Origin:   PostOrigin{Kind: IntegrationOrigin, Name: "martie-dev"},
+	}
+	if err := validateReplyResponse(reply, ThreadRef{Board: "i", ThreadID: 100}, "martie-prod"); err == nil || !strings.Contains(err.Error(), "requesting integration") {
+		t.Fatalf("error = %v, want integration mismatch", err)
+	}
+}
+
 func TestVerifyWebhookBody(t *testing.T) {
-	body := []byte(`{"event_id":"ptchan:thread.created:i:100","kind":"thread.created","source":"ptchan","observed_at":"2026-07-19T12:00:00Z","post":{"board":"i","thread_id":100,"post_id":100}}`)
+	body := []byte(`{"schema_version":"1","event_id":"ptchan:thread.created:i:100","kind":"thread.created","source":"ptchan","observed_at":"2026-07-19T12:00:00Z","post":{"board":"i","thread_id":100,"post_id":100,"url":"https://ptchan.test/i/thread/100.html#100","date":"2026-07-19T12:00:00Z","attachment_count":0}}`)
 	timestamp := "2026-07-19T12:00:00Z"
 	signature := webhookSignature("secret", timestamp, body)
 	now := time.Date(2026, time.July, 19, 12, 0, 30, 0, time.UTC)

@@ -76,7 +76,7 @@ need them.
 - App-specific ptchan policy should live with the app that uses it. Assistant
   text-to-thread-link detection belongs with assistant context because it is an
   input-enrichment concern, not a gateway protocol concern.
-- `internal/assistant` owns assistant-side prompt traces, shared prompt text helpers, and ptchan context packet selection/rendering.
+- `internal/assistant` owns shared prompt text helpers and ptchan context packet selection/rendering.
 - `internal/deepseek` owns completion API transport and payloads.
 - `internal/apps/streamnotifier/probe` owns stream probing and channel payloads
   because it is private to `streamnotifier`.
@@ -84,8 +84,8 @@ need them.
 - Keep translation between external payloads and stored records inside the app
   that owns the workflow, not in `internal/storage`.
 - Keep Telegram-specific admission, rendering, and memory behavior out of
-  ptchan-native assistant code. Shared prompt tracing and ptchan context
-  rendering already live outside `app`; model completion, rate limiting, signed
+  ptchan-native assistant code. Shared ptchan context rendering already lives
+  outside `app`; model completion, rate limiting, signed
   gateway clients, and idempotency ledgers may be extracted when there is a real
   second consumer.
 
@@ -119,26 +119,26 @@ need them.
   acknowledged so repeated webhook deliveries do not repeat public side effects.
 - `conversation` owns temporary participant aliases, reply context, bounded in-memory history, and expiration. Conversation history is intentionally not persisted.
 - Shared ptchan context should stay request-scoped. Do not persist fetched
-  gateway thread data or model prompt packets unless an explicit trace setting is
-  enabled.
+  gateway thread data or model prompt packets.
 
 ## Configuration
 
 - TOML contains application settings; environment variables are reserved for secrets and deployment paths.
 - Keep TOML decoding strict. Unknown fields, duplicate keys, and malformed
   configured values should fail clearly.
-- `LoadConfig` parses the document. `Config.ForApp` selects the app role,
-  ptchan integration identity, and optional SQLite path. `ValidateRun` enforces
-  dependencies for that selected app. Do not make unrelated app settings require
-  secrets or IDs.
+- `LoadConfig` parses the document and converts settings for the selected app,
+  including its ptchan integration identity. All roles use
+  `storage.sqlite_path`.
+  `ValidateRun` enforces that app's external dependencies. Do not make unrelated
+  app settings require secrets, IDs, or semantically valid values.
 - Keep one human-facing TOML file, but let app packages own their runtime config
   structs. `internal/app` may keep raw file-only structs for strict decoding,
   defaults, secret loading, app selection, and cross-cutting validation.
 - Telegram-backed apps require `TELEGRAM_BOT_TOKEN`. `threadnotifier` and `streamnotifier`
   require the notification chat. `chatter` requires the
-  discussion chat, access policy, and DeepSeek credentials. `channer`
-  should require DeepSeek credentials and the ptchan integration secret, but not
-  Telegram.
+  discussion chat, access policy, DeepSeek credentials, and the ptchan
+  integration secret. `channer` requires DeepSeek credentials and the ptchan
+  integration secret, but not Telegram.
 - Gateway webhooks, gateway thread reads, and gateway posting use
   `PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET`. `ptchan.chatter`,
   `ptchan.channer`, and `ptchan.threadnotifier` may override the top-level

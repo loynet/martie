@@ -26,10 +26,6 @@ type Config struct {
 	PruneAfter    time.Duration
 }
 
-type PtchanConfig struct {
-	BaseURL string
-}
-
 type Sender interface {
 	Send(context.Context, telegram.SendRequest) error
 }
@@ -40,7 +36,7 @@ type Metrics interface {
 
 type Notifier struct {
 	Config       Config
-	Ptchan       PtchanConfig
+	BaseURL      string
 	Format       Formatter
 	ChatID       int64
 	Store        *threadnotifierstate.Store
@@ -57,12 +53,7 @@ func (g *Notifier) SetNowFunc(nowFunc func() time.Time) {
 	g.nowFunc = nowFunc
 }
 
-func (g *Notifier) MarkBootstrapped(now time.Time) {
-	g.bootstrapAt = now
-	g.bootstrapped = true
-}
-
-func (g *Notifier) loadBootstrap(ctx context.Context) error {
+func (g *Notifier) Initialize(ctx context.Context) error {
 	bootstrapAt, err := g.Store.EnsureBootstrapAt(ctx, g.now())
 	if err != nil {
 		return fmt.Errorf("load threadnotifier bootstrap watermark: %w", err)
@@ -75,14 +66,15 @@ func (g *Notifier) loadBootstrap(ctx context.Context) error {
 }
 
 func (g *Notifier) Run(ctx context.Context) error {
-	if err := g.loadBootstrap(ctx); err != nil {
-		return err
-	}
 	g.deliverNotifications(ctx)
 	return nil
 }
 
 func (g *Notifier) ConsumeGatewayEvent(ctx context.Context, event gateway.WebhookEvent) error {
+	if event.Kind != gateway.ThreadCreated && event.Kind != gateway.PostCreated {
+		g.Logger.Debug("threadnotifier event ignored", "event_id", event.EventID, "kind", event.Kind)
+		return nil
+	}
 	g.consumeMu.Lock()
 	defer g.consumeMu.Unlock()
 	if !g.bootstrapped {
@@ -157,7 +149,7 @@ func (g *Notifier) notificationForEvent(record threadnotifierstate.Thread, event
 		return nil
 	}
 
-	message := g.Format.ThreadNotification(g.Ptchan.BaseURL, ThreadNotice{
+	message := g.Format.ThreadNotification(g.BaseURL, ThreadNotice{
 		Board:      record.Board,
 		PostID:     record.PostID,
 		Date:       record.CreatedAt,
@@ -210,11 +202,11 @@ func (g *Notifier) deliverPendingNotifications(ctx context.Context) {
 		}
 		now := g.now()
 		if err := g.Telegram.Send(ctx, telegram.SendRequest{ChatID: notification.ChatID, Message: message}); err == nil {
+			g.Metrics.ObserveNotification(Source, NotificationSent)
 			if err := g.Store.MarkNotificationSent(ctx, notification.ID, now); err != nil {
 				g.Logger.Warn("mark threadnotifier notification sent failed", "id", notification.ID, "error", err)
 				continue
 			}
-			g.Metrics.ObserveNotification(Source, NotificationSent)
 			continue
 		}
 

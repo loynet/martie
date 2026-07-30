@@ -79,28 +79,24 @@ func (c *conversation) userMessage(assistantName string, request Request) (strin
 	return fmt.Sprintf("Message being replied to from %s:\n%s\n\nCurrent request:\n%s", replyAuthor, replyText, requestText), true
 }
 
-func (c *conversation) expire(now time.Time, ttl time.Duration) int {
+func (c *conversation) expire(now time.Time, ttl time.Duration) {
 	firstCurrent := 0
 	for firstCurrent < len(c.exchanges) && now.Sub(c.exchanges[firstCurrent].createdAt) >= ttl {
 		firstCurrent++
 	}
 	c.exchanges = c.exchanges[firstCurrent:]
-	return firstCurrent
 }
 
-func (c *conversation) remember(userAlias, userText, assistantText string, now time.Time, exchangeLimit int) int {
+func (c *conversation) remember(userAlias, userText, assistantText string, now time.Time, exchangeLimit int) {
 	c.exchanges = append(c.exchanges, exchange{
 		userAlias:     userAlias,
 		userText:      assistant.TruncateRunes(userText, historyMessageRunes),
 		assistantText: assistant.TruncateRunes(assistantText, historyMessageRunes),
 		createdAt:     now,
 	})
-	removed := 0
 	for len(c.exchanges) > exchangeLimit || c.runes() > historyRuneLimit {
 		c.exchanges = c.exchanges[1:]
-		removed++
 	}
-	return removed
 }
 
 func (c *conversation) runes() int {
