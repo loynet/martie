@@ -15,8 +15,8 @@ func TestClientSend(t *testing.T) {
 	var gotRequest *http.Request
 
 	client := &Client{
-		baseURL: "https://api.telegram.org/bottoken",
-		http: &http.Client{
+		BaseURL: "https://api.telegram.org/bottoken",
+		HTTPClient: &http.Client{
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				gotRequest = req
 
@@ -83,9 +83,9 @@ func TestClientSendFallsBackToPlainTextForInvalidMarkdown(t *testing.T) {
 	var forms []url.Values
 	var logs bytes.Buffer
 	client := &Client{
-		baseURL: "https://api.telegram.org/bottoken",
-		logger:  slog.New(slog.NewTextHandler(&logs, nil)),
-		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		BaseURL: "https://api.telegram.org/bottoken",
+		Logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -123,8 +123,8 @@ func TestClientSendFallsBackToPlainTextForInvalidMarkdown(t *testing.T) {
 
 func TestClientSendAPIFailure(t *testing.T) {
 	client := &Client{
-		baseURL: "https://api.telegram.org/bottoken",
-		http: &http.Client{
+		BaseURL: "https://api.telegram.org/bottoken",
+		HTTPClient: &http.Client{
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusOK,
@@ -147,8 +147,8 @@ func TestClientSendAPIFailure(t *testing.T) {
 
 func TestClientRejectsOversizedResponse(t *testing.T) {
 	client := &Client{
-		baseURL: "https://api.telegram.org/bottoken",
-		http: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		BaseURL: "https://api.telegram.org/bottoken",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
@@ -167,8 +167,8 @@ func TestClientRejectsOversizedResponse(t *testing.T) {
 func TestClientSendTyping(t *testing.T) {
 	var gotRequest *http.Request
 	client := &Client{
-		baseURL: "https://api.telegram.org/bottoken",
-		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		BaseURL: "https://api.telegram.org/bottoken",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			gotRequest = req
 			return &http.Response{
 				StatusCode: http.StatusOK,

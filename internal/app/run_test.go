@@ -6,16 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestPollingComponentWaitsAfterPollCompletes(t *testing.T) {
+func TestPollingWorkerWaitsAfterPollCompletes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	interval := 30 * time.Millisecond
 	var calls []time.Time
-	component := pollingComponent("test", interval, func(context.Context) error {
+	worker := pollingWorker("test", interval, func(context.Context) error {
 		calls = append(calls, time.Now())
 		if len(calls) == 2 {
 			cancel()
@@ -23,7 +24,7 @@ func TestPollingComponentWaitsAfterPollCompletes(t *testing.T) {
 		return nil
 	}, newMetrics(), discardLogger())
 
-	if err := component.run(ctx); err != nil {
+	if err := worker.run(ctx); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
 	if len(calls) != 2 {
@@ -38,8 +39,26 @@ func TestHTTPHandlerServesHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	response := httptest.NewRecorder()
 
-	httpHandler(newMetrics()).ServeHTTP(response, request)
+	httpHandler(newMetrics(), &atomic.Bool{}).ServeHTTP(response, request)
 
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 OK", response.Code)
+	}
+}
+
+func TestHTTPHandlerReportsReadiness(t *testing.T) {
+	var ready atomic.Bool
+	handler := httpHandler(newMetrics(), &ready)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 Service Unavailable", response.Code)
+	}
+
+	ready.Store(true)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 OK", response.Code)
 	}

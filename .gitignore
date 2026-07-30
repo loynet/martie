@@ -10,8 +10,8 @@ data/
 *.test
 *.out
 coverage.out
-martie-assistant-*.trace
-internal/app/testdata/ptchan_context/local/
+martie-*.trace
+internal/assistant/testdata/local/
 
 # macOS
 .DS_Store

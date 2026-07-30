@@ -16,14 +16,16 @@ import (
 const maxResponseBytes = 1 << 20
 
 type Client struct {
-	baseURL string
-	http    *http.Client
-	logger  *slog.Logger
+	BaseURL    string
+	HTTPClient *http.Client
+	Logger     *slog.Logger
 }
 
 type APIError struct {
-	Description string
-	RetryAfter  int
+	StatusCode  int
+	Description string `json:"description"`
+	RetryAfter  int    `json:"-"`
+	Body        []byte `json:"-"`
 }
 
 func (e *APIError) Error() string {
@@ -34,10 +36,13 @@ func (e *APIError) Error() string {
 }
 
 func New(botToken string, logger *slog.Logger) *Client {
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &Client{
-		baseURL: fmt.Sprintf("https://api.telegram.org/bot%s", botToken),
-		logger:  logger.With("component", "telegram"),
-		http: &http.Client{
+		BaseURL: fmt.Sprintf("https://api.telegram.org/bot%s", botToken),
+		Logger:  logger.With("component", "telegram"),
+		HTTPClient: &http.Client{
 			Timeout: 40 * time.Second,
 		},
 	}
@@ -57,8 +62,7 @@ func (c *Client) SendTyping(ctx context.Context, chatID, messageThreadID int64) 
 	if messageThreadID != 0 {
 		form.Set("message_thread_id", fmt.Sprintf("%d", messageThreadID))
 	}
-	_, err := call[json.RawMessage](ctx, c, "sendChatAction", form)
-	return err
+	return c.do(ctx, "sendChatAction", form, nil)
 }
 
 // Send uses the Bot API sendMessage method:
@@ -86,68 +90,78 @@ func (c *Client) Send(ctx context.Context, request SendRequest) error {
 		form.Set("reply_parameters", string(replyParameters))
 	}
 
-	_, err := call[json.RawMessage](ctx, c, "sendMessage", form)
+	err := c.do(ctx, "sendMessage", form, nil)
 	var apiErr *APIError
 	if request.Message.parseMode != "" && errors.As(err, &apiErr) && strings.Contains(strings.ToLower(apiErr.Description), "can't parse entities") {
-		if c.logger != nil {
-			c.logger.Warn("telegram markdown rejected; retrying as plain text", "chat_id", request.ChatID, "error", err)
+		if c.Logger != nil {
+			c.Logger.Warn("telegram markdown rejected; retrying as plain text", "chat_id", request.ChatID, "error", err)
 		}
 		form.Del("parse_mode")
-		_, err = call[json.RawMessage](ctx, c, "sendMessage", form)
+		err = c.do(ctx, "sendMessage", form, nil)
 	}
 	return err
 }
 
-func call[T any](ctx context.Context, client *Client, method string, form url.Values) (T, error) {
-	var zero T
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/"+method, strings.NewReader(form.Encode()))
+func (c *Client) do(ctx context.Context, method string, form url.Values, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/"+method, strings.NewReader(form.Encode()))
 	if err != nil {
-		return zero, fmt.Errorf("create request: %w", err)
+		return fmt.Errorf("create telegram request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := client.http.Do(req)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		var requestError *url.Error
 		if errors.As(err, &requestError) {
 			err = requestError.Err
 		}
-		return zero, fmt.Errorf("send request: %w", err)
+		return fmt.Errorf("send telegram request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return zero, fmt.Errorf("read response: %w", err)
+		return fmt.Errorf("read telegram response: %w", err)
 	}
 	if len(body) > maxResponseBytes {
-		return zero, fmt.Errorf("telegram api response exceeds %d bytes", maxResponseBytes)
+		return fmt.Errorf("telegram api response exceeds %d bytes", maxResponseBytes)
 	}
 
 	var result struct {
-		OK          bool   `json:"ok"`
-		Result      T      `json:"result"`
-		Description string `json:"description"`
+		OK          bool            `json:"ok"`
+		Result      json.RawMessage `json:"result"`
+		Description string          `json:"description"`
 		Parameters  struct {
 			RetryAfter int `json:"retry_after"`
 		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		if resp.StatusCode != http.StatusOK {
-			return zero, fmt.Errorf("telegram api unexpected status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+			return fmt.Errorf("telegram api unexpected status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 		}
-		return zero, fmt.Errorf("decode response: %w", err)
+		return fmt.Errorf("decode telegram response: %w", err)
 	}
 
 	if !result.OK {
-		return zero, &APIError{
+		return &APIError{
+			StatusCode:  resp.StatusCode,
 			Description: result.Description,
 			RetryAfter:  result.Parameters.RetryAfter,
+			Body:        append([]byte(nil), body...),
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return zero, fmt.Errorf("telegram api unexpected status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("telegram api unexpected status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	if out != nil && len(result.Result) > 0 {
+		if err := json.Unmarshal(result.Result, out); err != nil {
+			return fmt.Errorf("decode telegram result: %w", err)
+		}
 	}
 
-	return result.Result, nil
+	return nil
 }

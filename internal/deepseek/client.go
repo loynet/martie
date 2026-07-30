@@ -12,16 +12,17 @@ import (
 )
 
 const (
-	baseURL          = "https://api.deepseek.com"
+	defaultBaseURL   = "https://api.deepseek.com"
 	maxResponseBytes = 1 << 20
+	requestTimeout   = 60 * time.Second
 )
 
 type Client struct {
-	apiKey    string
-	model     string
-	maxTokens int
-	baseURL   string
-	http      *http.Client
+	APIKey     string
+	Model      string
+	MaxTokens  int
+	BaseURL    string
+	HTTPClient *http.Client
 }
 
 type Completion struct {
@@ -67,13 +68,13 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("deepseek api error: status %d: %s", e.StatusCode, e.Message)
 }
 
-func New(apiKey, model string, maxTokens int, timeout time.Duration) *Client {
+func New(apiKey, model string, maxTokens int) *Client {
 	return &Client{
-		apiKey:    apiKey,
-		model:     model,
-		maxTokens: maxTokens,
-		baseURL:   baseURL,
-		http:      &http.Client{Timeout: timeout},
+		APIKey:     apiKey,
+		Model:      model,
+		MaxTokens:  maxTokens,
+		BaseURL:    defaultBaseURL,
+		HTTPClient: &http.Client{Timeout: requestTimeout},
 	}
 }
 
@@ -85,23 +86,27 @@ func (c *Client) Complete(ctx context.Context, systemPrompt string, conversation
 	messages = append(messages, conversation...)
 
 	body, err := json.Marshal(completionRequest{
-		Model:     c.model,
+		Model:     c.Model,
 		Messages:  messages,
 		Thinking:  thinking{Type: "disabled"},
-		MaxTokens: c.maxTokens,
+		MaxTokens: c.MaxTokens,
 	})
 	if err != nil {
 		return Completion{}, fmt.Errorf("encode completion request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return Completion{}, fmt.Errorf("create completion request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return Completion{}, fmt.Errorf("send completion request: %w", err)
 	}

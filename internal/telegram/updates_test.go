@@ -1,6 +1,49 @@
 package telegram
 
-import "testing"
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"testing"
+)
+
+func TestClientGetUpdates(t *testing.T) {
+	var gotRequest *http.Request
+	client := &Client{
+		BaseURL: "https://api.telegram.org/bottoken",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			gotRequest = req
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":[{"update_id":11,"message":{"message_id":7,"text":"hello"}}]}`)),
+			}, nil
+		})},
+	}
+
+	updates, err := client.GetUpdates(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("GetUpdates() error = %v", err)
+	}
+	if len(updates) != 1 || updates[0].ID != 11 || updates[0].Message.Text != "hello" {
+		t.Fatalf("updates = %+v", updates)
+	}
+
+	body, err := io.ReadAll(gotRequest.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRequest.URL.Path != "/bottoken/getUpdates" || form.Get("offset") != "10" || form.Get("timeout") != "30" || form.Get("allowed_updates") != `["message"]` {
+		t.Fatalf("request path=%q form=%v", gotRequest.URL.Path, form)
+	}
+}
 
 func TestIncomingMessageAddressesMentionWithUTF16Offset(t *testing.T) {
 	message := IncomingMessage{

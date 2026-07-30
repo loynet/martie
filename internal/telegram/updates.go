@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -47,20 +46,23 @@ type Update struct {
 }
 
 func (c *Client) GetMe(ctx context.Context) (User, error) {
-	return call[User](ctx, c, "getMe", nil)
+	var user User
+	if err := c.do(ctx, "getMe", nil, &user); err != nil {
+		return User{}, err
+	}
+	return user, nil
 }
 
 func (c *Client) GetUpdates(ctx context.Context, offset int64) ([]Update, error) {
-	allowedUpdates, err := json.Marshal([]string{"message"})
-	if err != nil {
-		return nil, fmt.Errorf("encode allowed updates: %w", err)
-	}
-
 	form := url.Values{}
 	form.Set("offset", fmt.Sprintf("%d", offset))
 	form.Set("timeout", "30")
-	form.Set("allowed_updates", string(allowedUpdates))
-	return call[[]Update](ctx, c, "getUpdates", form)
+	form.Set("allowed_updates", `["message"]`)
+	var updates []Update
+	if err := c.do(ctx, "getUpdates", form, &updates); err != nil {
+		return nil, err
+	}
+	return updates, nil
 }
 
 func (m IncomingMessage) Addresses(bot User) bool {
