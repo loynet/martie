@@ -209,8 +209,10 @@ func (a Responder) handle(ctx context.Context, request request) error {
 	if a.Limit != nil {
 		switch a.Limit.allow(request.Thread, startedAt) {
 		case limitGlobal:
+			a.logRateLimit(request, "global")
 			return a.markFailed(ctx, request.EventID, outcomeGlobalRateLimited, "channer global rate limit exceeded")
 		case limitThread:
+			a.logRateLimit(request, "thread")
 			return a.markFailed(ctx, request.EventID, outcomeThreadRateLimited, "channer thread rate limit exceeded")
 		}
 	}
@@ -242,6 +244,9 @@ func (a Responder) handle(ctx context.Context, request request) error {
 		return a.markFailed(ctx, request.EventID, "completion_rejected", err.Error())
 	}
 	replyText := formatChannerReply(request.PostID, text)
+	if replyText == "" {
+		return a.markFailed(ctx, request.EventID, "completion_rejected", "completion contained no reply after removing the triggering post reference")
+	}
 	finalizeCtx, cancel = finalizationContext(ctx)
 	err = a.Store.MarkEventPosting(finalizeCtx, request.EventID, a.now().UTC())
 	cancel()
@@ -266,6 +271,9 @@ func (a Responder) handle(ctx context.Context, request request) error {
 			}
 			return nil
 		}
+		if postingErr.Code == "rate_limited" {
+			a.logRateLimit(request, "gateway")
+		}
 		return a.markFailed(ctx, request.EventID, postingFailure(postingErr), err.Error())
 	}
 	finalizeCtx, cancel = finalizationContext(ctx)
@@ -286,6 +294,10 @@ func (a Responder) handle(ctx context.Context, request request) error {
 	}
 	a.Logger.Info("channer replied", "event_id", request.EventID, "board", reply.Board, "thread_id", reply.ThreadID, "post_id", reply.PostID)
 	return nil
+}
+
+func (a Responder) logRateLimit(request request, scope string) {
+	a.Logger.Warn("channer request rate limited", "scope", scope, "event_id", request.EventID, "board", request.Thread.Board, "thread_id", request.Thread.ThreadID, "post_id", request.PostID)
 }
 
 func (a Responder) markFailed(ctx context.Context, eventID, code, message string) error {
@@ -375,11 +387,62 @@ func ptchanCompletionText(completion deepseek.Completion) (string, bool) {
 }
 
 func formatChannerReply(postID int64, text string) string {
-	text = strings.TrimSpace(text)
 	text = assistant.StripUnsafeControls(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = stripLeadingPostReference(text, postID)
+	text = removeBlankLineAfterLeadingReferences(text)
+	if text == "" {
+		return ""
+	}
 	text = assistant.TruncateRunes(text, maxChannerReplyRunes)
 	prefix := fmt.Sprintf(">>%d\n", postID)
 	return prefix + truncatePtchanReplyBytes(text, maxChannerReplyBytes-len(prefix))
+}
+
+func stripLeadingPostReference(text string, postID int64) string {
+	text = strings.TrimSpace(text)
+	reference := fmt.Sprintf(">>%d", postID)
+	for {
+		line, rest, found := strings.Cut(text, "\n")
+		if strings.TrimSpace(line) != reference {
+			return text
+		}
+		if !found {
+			return ""
+		}
+		text = strings.TrimSpace(rest)
+	}
+}
+
+func removeBlankLineAfterLeadingReferences(text string) string {
+	lines := strings.Split(text, "\n")
+	references := 0
+	for references < len(lines) && isPostReferenceLine(lines[references]) {
+		references++
+	}
+	if references == 0 {
+		return text
+	}
+
+	body := references
+	for body < len(lines) && strings.TrimSpace(lines[body]) == "" {
+		body++
+	}
+	return strings.Join(append(lines[:references], lines[body:]...), "\n")
+}
+
+func isPostReferenceLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if len(line) <= 2 || !strings.HasPrefix(line, ">>") {
+		return false
+	}
+	for _, r := range line[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func truncatePtchanReplyBytes(text string, limit int) string {

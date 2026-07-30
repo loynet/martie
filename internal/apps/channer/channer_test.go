@@ -1,6 +1,7 @@
 package channer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -193,9 +194,31 @@ func TestFormatChannerReplySanitizesControls(t *testing.T) {
 
 func TestFormatChannerReplyAddsFocusBeforeOtherModelReference(t *testing.T) {
 	got := formatChannerReply(101, " >>99\n\nhello")
-	want := ">>101\n>>99\n\nhello"
+	want := ">>101\n>>99\nhello"
 	if got != want {
 		t.Fatalf("reply = %q, want %q", got, want)
+	}
+}
+
+func TestFormatChannerReplyPreservesOtherReferencesAndParagraphSpacing(t *testing.T) {
+	got := formatChannerReply(101, ">>99\n>>98\n\nfirst paragraph\n\nsecond paragraph")
+	want := ">>101\n>>99\n>>98\nfirst paragraph\n\nsecond paragraph"
+	if got != want {
+		t.Fatalf("reply = %q, want %q", got, want)
+	}
+}
+
+func TestFormatChannerReplyRemovesModelFocusReferencesAndNormalizesNewlines(t *testing.T) {
+	got := formatChannerReply(101, " \r\n>>101\r\n>>101\r\n\r\nhello\r\nthere ")
+	want := ">>101\nhello\nthere"
+	if got != want {
+		t.Fatalf("reply = %q, want %q", got, want)
+	}
+}
+
+func TestFormatChannerReplyRejectsOnlyModelFocusReferences(t *testing.T) {
+	if got := formatChannerReply(101, ">>101\r\n>>101"); got != "" {
+		t.Fatalf("reply = %q, want empty", got)
 	}
 }
 
@@ -324,7 +347,8 @@ func TestChannerPostsReplyToFocusPost(t *testing.T) {
 	}
 	if len(completer.requests[0].messages) != 1 ||
 		!strings.Contains(completer.requests[0].messages[0].Content, "what now?") ||
-		!strings.Contains(completer.requests[0].messages[0].Content, "automatically prefixes your answer with >>102") {
+		!strings.Contains(completer.requests[0].messages[0].Content, "automatically prefixes your answer with >>102") ||
+		!strings.Contains(completer.requests[0].messages[0].Content, "Do not add a leading reference to the current post yourself") {
 		t.Fatalf("messages = %+v", completer.requests[0].messages)
 	}
 	if len(poster.requests) != 1 {
@@ -339,12 +363,13 @@ func TestChannerMarksStructuredPostingFailureFinal(t *testing.T) {
 	store := testChannerStore(t)
 	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
 	metrics := &recordingMetrics{}
+	var logs bytes.Buffer
 	channer := Responder{
 		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
 		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "answer", FinishReason: deepseek.FinishStop}},
 		Poster:    &fakePtchanPoster{err: &gateway.Error{Code: "rate_limited", Message: "wait", Retryable: true}},
-		Logger:    discardLogger(),
+		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 		Metrics:   metrics,
 		nowFunc:   func() time.Time { return now },
 	}
@@ -370,11 +395,15 @@ func TestChannerMarksStructuredPostingFailureFinal(t *testing.T) {
 	if metrics.outcomes[outcomeGatewayRateLimited] != 1 {
 		t.Fatalf("outcomes = %v, want one gateway_rate_limited", metrics.outcomes)
 	}
+	if got := logs.String(); !strings.Contains(got, `msg="channer request rate limited"`) || !strings.Contains(got, "scope=gateway") {
+		t.Fatalf("gateway rate-limit log missing: %s", got)
+	}
 }
 
 func TestChannerMarksThreadRateLimitedEventFinal(t *testing.T) {
 	store := testChannerStore(t)
 	metrics := &recordingMetrics{}
+	var logs bytes.Buffer
 	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
 	limit := NewLimiter(25, 3, 6, 2)
 	thread := gateway.ThreadRef{Board: "i", ThreadID: 100}
@@ -387,7 +416,7 @@ func TestChannerMarksThreadRateLimitedEventFinal(t *testing.T) {
 		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "answer", FinishReason: deepseek.FinishStop}},
 		Poster:    &fakePtchanPoster{reply: gateway.ReplyResponse{Board: "i", ThreadID: 100, PostID: 106}},
 		Limit:     limit,
-		Logger:    discardLogger(),
+		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 		Metrics:   metrics,
 		nowFunc:   func() time.Time { return now },
 	}
@@ -412,6 +441,17 @@ func TestChannerMarksThreadRateLimitedEventFinal(t *testing.T) {
 	}
 	if metrics.outcomes[outcomeThreadRateLimited] != 1 {
 		t.Fatalf("outcomes = %v, want one local_thread_rate_limited", metrics.outcomes)
+	}
+	for _, want := range []string{
+		`msg="channer request rate limited"`,
+		"scope=thread",
+		"board=i",
+		"thread_id=100",
+		"post_id=105",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log missing %q: %s", want, logs.String())
+		}
 	}
 }
 
