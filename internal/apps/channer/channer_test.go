@@ -192,6 +192,26 @@ func TestFormatChannerReplySanitizesControls(t *testing.T) {
 	}
 }
 
+func TestFormatChannerRequestKeepsRulesBeforeDynamicContext(t *testing.T) {
+	context := "BEGIN PTCHAN CONTEXT\nTHREAD TRANSCRIPT\n[100]"
+	got := formatChannerRequest(request{
+		Thread: gateway.ThreadRef{Board: "i", ThreadID: 100},
+		PostID: 101,
+		Text:   "what is this?",
+	}, context)
+
+	if !strings.HasPrefix(got, "CHANNER RESPONSE RULES\n") {
+		t.Fatalf("request does not start with static rules:\n%s", got)
+	}
+	rules, remainder, found := strings.Cut(got, "\n\n"+context)
+	if !found || strings.Contains(rules, "101") || !strings.Contains(remainder, "Focus post: 101") {
+		t.Fatalf("request did not separate static rules from dynamic request:\n%s", got)
+	}
+	if strings.Contains(got, "Board: /i/") || strings.Contains(got, "Thread ID: 100") {
+		t.Fatalf("request repeats thread coordinates:\n%s", got)
+	}
+}
+
 func TestFormatChannerReplyAddsFocusBeforeOtherModelReference(t *testing.T) {
 	got := formatChannerReply(101, " >>99\n\nhello")
 	want := ">>101\n>>99\nhello"
@@ -347,8 +367,8 @@ func TestChannerPostsReplyToFocusPost(t *testing.T) {
 	}
 	if len(completer.requests[0].messages) != 1 ||
 		!strings.Contains(completer.requests[0].messages[0].Content, "what now?") ||
-		!strings.Contains(completer.requests[0].messages[0].Content, "automatically prefixes your answer with >>102") ||
-		!strings.Contains(completer.requests[0].messages[0].Content, "Do not add a leading reference to the current post yourself") {
+		!strings.Contains(completer.requests[0].messages[0].Content, "The posting layer adds the leading reference to the focus post") ||
+		!strings.Contains(completer.requests[0].messages[0].Content, "Focus post: 102") {
 		t.Fatalf("messages = %+v", completer.requests[0].messages)
 	}
 	if len(poster.requests) != 1 {

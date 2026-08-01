@@ -51,14 +51,17 @@ func TestFormatPtchanContextUsesGatewayPosts(t *testing.T) {
 		"Posts that reference the focus post: none",
 		"THREAD TRANSCRIPT",
 		"[100 | OP] | Anónimo",
-		"Included because: This is the OP.",
 		"```ptchan-post\nop\ntext\n```",
-		"[103 | FOCUS] | new | PT",
-		"Included because: This is the focus post.",
+		"[103] | new | PT",
 		"Attachments: 2",
 		"```ptchan-post\n>>100\nnew\n```",
 		"References: 100",
-		"Referenced by: 104 unavailable in provided context",
+		"DYNAMIC THREAD STATE",
+		"POST SELECTION",
+		"Post 100: This is the OP. Post 103 references it. It is near focus post 103.",
+		"Post 103: This is the focus post.",
+		"THREAD RELATIONSHIPS",
+		"Post 103 is referenced by: 104 unavailable in provided context",
 		"RESPONSE RULES",
 		"Do not claim access to IPs, accounts, sessions, moderation data, hidden identity, or raw upstream metadata.",
 		"END PTCHAN CONTEXT",
@@ -69,6 +72,35 @@ func TestFormatPtchanContextUsesGatewayPosts(t *testing.T) {
 	}
 	if strings.Contains(got, "[101]") || strings.Contains(got, "[102]") {
 		t.Fatalf("context included old or empty replies:\n%s", got)
+	}
+}
+
+func TestFormatPtchanContextKeepsTranscriptStableAcrossFocusPosts(t *testing.T) {
+	thread := gateway.Thread{
+		Board:    "i",
+		ThreadID: 100,
+		Posts: []gateway.Post{
+			{Board: "i", ThreadID: 100, PostID: 100, Message: "op", ReferencedBy: []gateway.PostRef{{Board: "i", ThreadID: 100, PostID: 102}}},
+			{Board: "i", ThreadID: 100, PostID: 101, Message: "first"},
+			{Board: "i", ThreadID: 100, PostID: 102, Message: "second", References: []gateway.PostRef{{Board: "i", ThreadID: 100, PostID: 100}}},
+		},
+	}
+
+	first := formatPtchanContextWithLimit(thread, 101, PtchanContextConfig{MaxReplies: 2}, 4000)
+	second := formatPtchanContextWithLimit(thread, 102, PtchanContextConfig{MaxReplies: 2}, 4000)
+	firstTranscript, _, found := strings.Cut(first, "\nDYNAMIC THREAD STATE")
+	if !found {
+		t.Fatalf("first context has no dynamic state:\n%s", first)
+	}
+	secondTranscript, _, found := strings.Cut(second, "\nDYNAMIC THREAD STATE")
+	if !found {
+		t.Fatalf("second context has no dynamic state:\n%s", second)
+	}
+	if firstTranscript != secondTranscript {
+		t.Fatalf("transcript differs by focus post:\n%s", firstStringDiff(firstTranscript, secondTranscript))
+	}
+	if strings.Contains(firstTranscript, "FOCUS") || strings.Contains(firstTranscript, "Included because") || strings.Contains(firstTranscript, "Referenced by") {
+		t.Fatalf("transcript contains dynamic state:\n%s", firstTranscript)
 	}
 }
 

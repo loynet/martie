@@ -359,20 +359,26 @@ func (a Responder) prune(ctx context.Context) {
 
 func formatChannerRequest(request request, contextText string) string {
 	var b strings.Builder
+	b.WriteString(channerResponseRules())
+	b.WriteString("\n\n")
 	if contextText != "" {
 		b.WriteString(contextText)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("CURRENT PTCHAN REQUEST\n\n")
-	fmt.Fprintf(&b, "Board: /%s/\n", request.Thread.Board)
-	fmt.Fprintf(&b, "Thread ID: %d\n", request.Thread.ThreadID)
-	fmt.Fprintf(&b, "Post ID: %d\n", request.PostID)
-	b.WriteString("Post text after removing the configured mention:\n")
+	fmt.Fprintf(&b, "Focus post: %d\n", request.PostID)
+	b.WriteString("Request after removing the configured mention:\n")
 	assistant.WriteFencedBlock(&b, "ptchan-request", request.Text)
-	b.WriteString("\n\nReply publicly to the current post. Start from the provided context, not hidden assumptions.")
-	fmt.Fprintf(&b, "\nThe posting layer automatically prefixes your answer with >>%d. Do not add a leading reference to the current post yourself.", request.PostID)
-	b.WriteString("\nUse natural chan style. Say OP when you mean the opening post or original poster. Use >>123 only when referring to a different post, without Markdown or full URLs.")
 	return b.String()
+}
+
+func channerResponseRules() string {
+	return `CHANNER RESPONSE RULES
+
+- Reply publicly to the focus post using only the provided context.
+- The posting layer adds the leading reference to the focus post. Do not add it yourself.
+- Use natural chan style. Say OP for the opening post or original poster.
+- Use >>123 only for a different post, without Markdown or full URLs.`
 }
 
 func ptchanCompletionText(completion deepseek.Completion) (string, bool) {
