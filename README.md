@@ -262,9 +262,13 @@ Assistants:
   admitted public requests. Outcomes are `posted`,
   `local_global_rate_limited`, `local_thread_rate_limited`,
   `gateway_rate_limited`, `completion_error`,
-  `completion_rejected`, `posting_rejected`, `posting_unknown`, or
+  `completion_rejected`, `no_reply`, `posting_rejected`, `posting_unknown`, or
   `not_configured`. Exact gateway failure codes remain in the SQLite event
   ledger rather than becoming metric labels.
+
+Channer requires `CHANNER_NO_REPLY_ANCHOR`: a private, high-entropy value used
+only in model instructions to suppress an unsafe reply. Do not put its value in
+TOML, user-facing prompts, or public documentation.
 
 Model calls:
 

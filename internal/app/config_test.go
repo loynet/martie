@@ -17,6 +17,7 @@ func TestLoadConfigSelectsAppSettings(t *testing.T) {
 	t.Setenv("PTCHAN_INTEGRATION_MARTIE_CHATTER_SECRET", " chatter-secret ")
 	t.Setenv("PTCHAN_INTEGRATION_MARTIE_CHANNER_SECRET", " channer-secret ")
 	t.Setenv("PTCHAN_INTEGRATION_MARTIE_THREAD_SECRET", " thread-secret ")
+	t.Setenv("CHANNER_NO_REPLY_ANCHOR", " channer-anchor ")
 
 	tests := []struct {
 		app         AppName
@@ -50,6 +51,9 @@ func TestLoadConfigSelectsAppSettings(t *testing.T) {
 				}
 				if len(cfg.Channer.Mentions) != 2 || cfg.Channer.Mentions[1] != "@Marta" {
 					t.Fatalf("channer mentions = %v", cfg.Channer.Mentions)
+				}
+				if cfg.Channer.NoReplyAnchor != "channer-anchor" {
+					t.Fatalf("channer anchor = %q", cfg.Channer.NoReplyAnchor)
 				}
 				if cfg.Channer.RequestLimit != 18 || cfg.Channer.RequestBurst != 2 ||
 					cfg.Channer.ThreadRequestLimit != 7 || cfg.Channer.ThreadRequestBurst != 2 {
@@ -223,6 +227,7 @@ func TestValidateRunUsesOnlySelectedDependencies(t *testing.T) {
 	}{
 		{"channer API key", func(cfg *Config) { cfg.DeepSeek.APIKey = "" }, "DEEPSEEK_API_KEY"},
 		{"channer secret", func(cfg *Config) { cfg.Ptchan.Secret = "" }, "PTCHAN_INTEGRATION_MARTIE_SECRET"},
+		{"channer no-reply anchor", func(cfg *Config) { cfg.Channer.NoReplyAnchor = "" }, "CHANNER_NO_REPLY_ANCHOR"},
 		{"thread Telegram", func(cfg *Config) {
 			cfg.App = AppThreadNotifier
 			cfg.Telegram = TelegramConfig{NotificationChatID: 1}
@@ -273,7 +278,7 @@ func TestLoadConfigRejectsUnknownApp(t *testing.T) {
 }
 
 func channerConfigForTest() channerapp.Config {
-	return channerapp.Config{Name: "Martie", Mentions: []string{"@martie"}, SystemPrompt: "Be useful."}
+	return channerapp.Config{Name: "Martie", Mentions: []string{"@martie"}, SystemPrompt: "Be useful.", NoReplyAnchor: "anchor"}
 }
 
 func writeConfig(t *testing.T, contents string) string {

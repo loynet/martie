@@ -357,6 +357,7 @@ func LoadConfig(app AppName) (Config, error) {
 		cfg.Channer = channerapp.Config{
 			Name:               strings.TrimSpace(raw.Name),
 			Mentions:           cleanMentions(raw.Channer.Mentions),
+			NoReplyAnchor:      strings.TrimSpace(os.Getenv("CHANNER_NO_REPLY_ANCHOR")),
 			MaxInputRunes:      raw.Channer.MaxInputRunes,
 			RequestLimit:       raw.Channer.RateLimit.RequestLimit,
 			RequestBurst:       raw.Channer.RateLimit.RequestBurst,
@@ -459,6 +460,9 @@ func (c Config) ValidateRun() error {
 		}
 		if c.Channer.SystemPrompt == "" {
 			return fmt.Errorf("channer.system_prompt is required for channer")
+		}
+		if c.Channer.NoReplyAnchor == "" {
+			return fmt.Errorf("CHANNER_NO_REPLY_ANCHOR is required for channer")
 		}
 		if c.DeepSeek.APIKey == "" {
 			return fmt.Errorf("DEEPSEEK_API_KEY is required for channer")

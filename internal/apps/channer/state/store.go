@@ -16,6 +16,7 @@ const (
 	EventProcessing  EventStatus = "processing"
 	EventPosting     EventStatus = "posting"
 	EventPosted      EventStatus = "posted"
+	EventSkipped     EventStatus = "skipped"
 	EventFailedFinal EventStatus = "failed_final"
 	EventUnknown     EventStatus = "unknown"
 )
@@ -151,6 +152,25 @@ WHERE event_id = ? AND status = ?;
 		return fmt.Errorf("mark channer event posted: %w", err)
 	}
 	return requireAffected(result, "channer event posted")
+}
+
+func (s *Store) MarkEventSkipped(ctx context.Context, eventID, code, message string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE channer_events
+SET status = ?, error_code = ?, error_message = ?, updated_at = ?
+WHERE event_id = ? AND status = ?;
+`,
+		EventSkipped,
+		code,
+		message,
+		storage.FormatTime(now),
+		eventID,
+		EventProcessing,
+	)
+	if err != nil {
+		return fmt.Errorf("mark channer event skipped: %w", err)
+	}
+	return requireAffected(result, "channer event skipped")
 }
 
 func (s *Store) MarkEventFailed(ctx context.Context, eventID, code, message string, now time.Time) error {
