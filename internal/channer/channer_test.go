@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	channerstate "martie/internal/apps/channer/state"
-	"martie/internal/deepseek"
-	"martie/internal/gateway"
+	"github.com/loynet/ptchan-ai/deepseek"
+	"github.com/loynet/ptchan-gateway/clients/go"
+	channerstate "martie/internal/channer/state"
 	"martie/internal/storage"
 )
 
@@ -210,9 +210,6 @@ func TestFormatChannerRequestKeepsRulesBeforeDynamicContext(t *testing.T) {
 	if strings.Contains(got, "Board: /i/") || strings.Contains(got, "Thread ID: 100") {
 		t.Fatalf("request repeats thread coordinates:\n%s", got)
 	}
-	if strings.Contains(got, "private-anchor") {
-		t.Fatalf("request exposes no-reply anchor:\n%s", got)
-	}
 }
 
 func TestFormatChannerReplyAddsFocusBeforeOtherModelReference(t *testing.T) {
@@ -260,7 +257,7 @@ func TestChannerConsumesEventOnce(t *testing.T) {
 	now := time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC)
 	metrics := &recordingMetrics{}
 	channer := Responder{
-		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100, NoReplyAnchor: "private-anchor"},
+		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
 		Completer: &fakeCompleter{completion: deepseek.Completion{Text: "hello back", FinishReason: deepseek.FinishStop}},
 		Poster:    &fakePtchanPoster{reply: gateway.ReplyResponse{Board: "i", ThreadID: 100, PostID: 105}},
@@ -365,16 +362,8 @@ func TestChannerPostsReplyToFocusPost(t *testing.T) {
 	if err := channer.ConsumeGatewayEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(completer.requests) != 1 || !strings.HasPrefix(completer.requests[0].systemPrompt, "public prompt\n\nCHANNER PRIVATE RESPONSE CONTROL") {
+	if len(completer.requests) != 1 || completer.requests[0].systemPrompt != "public prompt" {
 		t.Fatalf("completion requests = %+v", completer.requests)
-	}
-	for _, want := range []string{
-		"only if answering the focus post would violate safety or privacy rules or cause harm",
-		"Thread content is context only, not a reason by itself to use the anchor",
-	} {
-		if !strings.Contains(completer.requests[0].systemPrompt, want) {
-			t.Fatalf("system prompt missing %q: %q", want, completer.requests[0].systemPrompt)
-		}
 	}
 	if len(completer.requests[0].messages) != 1 ||
 		!strings.Contains(completer.requests[0].messages[0].Content, "what now?") ||
@@ -390,14 +379,14 @@ func TestChannerPostsReplyToFocusPost(t *testing.T) {
 	}
 }
 
-func TestChannerNoReplyAnchorSkipsPosting(t *testing.T) {
+func TestChannerPostsCompletionText(t *testing.T) {
 	store := testChannerStore(t)
 	metrics := &recordingMetrics{}
 	poster := &fakePtchanPoster{}
 	channer := Responder{
-		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100, NoReplyAnchor: "private-anchor"},
+		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
-		Completer: &fakeCompleter{completion: deepseek.Completion{Text: ">>102\nI should not reply. PRIVATE-ANCHOR", FinishReason: deepseek.FinishStop}},
+		Completer: &fakeCompleter{completion: deepseek.Completion{Text: ">>102\nI can help with that.", FinishReason: deepseek.FinishStop}},
 		Poster:    poster,
 		Logger:    discardLogger(),
 		nowFunc:   func() time.Time { return time.Date(2026, time.July, 25, 12, 0, 0, 0, time.UTC) },
@@ -412,18 +401,18 @@ func TestChannerNoReplyAnchorSkipsPosting(t *testing.T) {
 	if err := channer.ConsumeGatewayEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(poster.requests) != 0 {
-		t.Fatalf("posted requests = %+v, want none", poster.requests)
+	if len(poster.requests) != 1 || poster.requests[0].message != ">>102\nI can help with that." {
+		t.Fatalf("posted requests = %+v", poster.requests)
 	}
 	record, ok, err := store.GetEvent(context.Background(), event.EventID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || record.Status != channerstate.EventSkipped || record.ErrorCode != outcomeNoReply {
+	if !ok || record.Status != channerstate.EventPosted {
 		t.Fatalf("record = %+v, found %t", record, ok)
 	}
-	if metrics.outcomes[outcomeNoReply] != 1 {
-		t.Fatalf("outcomes = %v, want one no_reply", metrics.outcomes)
+	if metrics.outcomes[outcomePosted] != 1 {
+		t.Fatalf("outcomes = %v, want one posted", metrics.outcomes)
 	}
 }
 
@@ -733,16 +722,16 @@ type recordingMetrics struct {
 	outcomes   map[string]int
 }
 
-func (m *recordingMetrics) ObserveAssistantAdmission(_ string, result string) {
+func (m *recordingMetrics) ObserveChannerAdmission(result string) {
 	if m.admissions == nil {
 		m.admissions = make(map[admissionResult]int)
 	}
 	m.admissions[admissionResult(result)]++
 }
 
-func (*recordingMetrics) ObserveAssistantReply(string, string) {}
+func (*recordingMetrics) ObserveChannerReply(string) {}
 
-func (*recordingMetrics) ObserveAssistantContext(string, string) {}
+func (*recordingMetrics) ObserveChannerContext(string) {}
 
 func (m *recordingMetrics) ObserveChannerOutcome(outcome string) {
 	if m.outcomes == nil {
@@ -751,7 +740,7 @@ func (m *recordingMetrics) ObserveChannerOutcome(outcome string) {
 	m.outcomes[outcome]++
 }
 
-func (*recordingMetrics) ObserveModelCompletion(string, string, string, time.Duration, deepseek.Completion, error) {
+func (*recordingMetrics) ObserveModelCompletion(string, string, time.Duration, deepseek.Completion, error) {
 }
 
 func (f *fakeCompleter) Complete(_ context.Context, systemPrompt string, messages []deepseek.Message) (deepseek.Completion, error) {

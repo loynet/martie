@@ -4,9 +4,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loynet/ptchan-gateway/clients/go"
 	"golang.org/x/time/rate"
-
-	"martie/internal/gateway"
 )
 
 type limitResult uint8
@@ -33,11 +32,11 @@ type Limiter struct {
 	threads     map[gateway.ThreadRef]*threadLimit
 }
 
-func NewLimiter(globalLimit, globalBurst, perThreadLimit, perThreadBurst int) *Limiter {
+func NewLimiter(globalPerHour, globalBurst, threadPerHour, threadBurst int) *Limiter {
 	return &Limiter{
-		global:      hourlyLimiter(globalLimit, globalBurst),
-		threadRate:  hourlyRate(perThreadLimit),
-		threadBurst: perThreadBurst,
+		global:      hourlyLimiter(globalPerHour, globalBurst),
+		threadRate:  hourlyRate(threadPerHour),
+		threadBurst: threadBurst,
 		threads:     make(map[gateway.ThreadRef]*threadLimit),
 	}
 }

@@ -12,262 +12,137 @@ import (
 	"sync/atomic"
 	"time"
 
-	channerapp "martie/internal/apps/channer"
-	channerstate "martie/internal/apps/channer/state"
-	chatterapp "martie/internal/apps/chatter"
-	chatterstate "martie/internal/apps/chatter/state"
-	streamnotifierapp "martie/internal/apps/streamnotifier"
-	"martie/internal/apps/streamnotifier/probe"
-	streamnotifierstate "martie/internal/apps/streamnotifier/state"
-	threadnotifierapp "martie/internal/apps/threadnotifier"
-	threadnotifierstate "martie/internal/apps/threadnotifier/state"
-	"martie/internal/assistant"
-	"martie/internal/deepseek"
-	"martie/internal/gateway"
-	"martie/internal/localization"
+	"github.com/loynet/ptchan-ai/context/thread"
+	"github.com/loynet/ptchan-ai/deepseek"
+	"github.com/loynet/ptchan-gateway/clients/go"
+
+	"martie/internal/channer"
+	channerstate "martie/internal/channer/state"
 	"martie/internal/storage"
-	"martie/internal/telegram"
 )
 
 type worker struct {
-	name WorkerName
+	name string
 	run  func(context.Context) error
 }
 
-func Run(
-	ctx context.Context,
-	cfg Config,
-	db *storage.DB,
-	streamClient *probe.Client,
-	telegramClient *telegram.Client,
-	logger *slog.Logger,
-) error {
+const (
+	workerChanner       = "channer"
+	workerGatewayEvents = "gateway_events"
+)
+
+func Run(ctx context.Context, cfg Config, db *storage.DB, logger *slog.Logger) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	metrics := newMetrics()
 	var ready atomic.Bool
-	server, serverErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, &ready, logger.With("worker", "http"))
+	httpServer, httpErrors, err := startHTTPServer(cfg.Runtime.HTTPAddr, metrics, &ready, logger.With("worker", "http"))
 	if err != nil {
 		return err
 	}
 	defer ready.Store(false)
-	defer shutdownMetricsServer(server, logger)
-	runCtx, stop := context.WithCancel(ctx)
-	defer stop()
-	text := localization.New(cfg.Locale)
-
-	var workers []worker
-	var gatewayEventConsumers []gatewayEventTarget
-	switch cfg.App {
-	case AppStreamNotifier:
-		store, err := streamnotifierstate.New(db)
-		if err != nil {
-			return err
-		}
-		streamNotifier := streamnotifierapp.Poller{
-			Channels: cfg.StreamNotifier.Channels,
-			Format:   streamnotifierapp.NewFormatter(text),
-			ChatID:   cfg.Telegram.NotificationChatID,
-			Store:    store,
-			Client:   streamClient,
-			Telegram: telegramClient,
-			Metrics:  metrics,
-			Logger:   logger.With("worker", workerStreamNotifier),
-		}
-		workers = append(workers, pollingWorker(workerStreamNotifier, cfg.StreamNotifier.PollInterval, streamNotifier.Poll, metrics, logger))
-	case AppThreadNotifier:
-		store, err := threadnotifierstate.New(db)
-		if err != nil {
-			return err
-		}
-		threadNotifier := &threadnotifierapp.Notifier{
-			Config:   cfg.ThreadNotifier,
-			BaseURL:  cfg.Ptchan.BaseURL,
-			Format:   threadnotifierapp.NewFormatter(text),
-			ChatID:   cfg.Telegram.NotificationChatID,
-			Store:    store,
-			Telegram: telegramClient,
-			Metrics:  metrics,
-			Logger:   logger.With("worker", workerThreadNotifier),
-		}
-		if err := threadNotifier.Initialize(ctx); err != nil {
-			return err
-		}
-		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: workerThreadNotifier, consumer: threadNotifier})
-		workers = append(workers, worker{name: workerThreadNotifier, run: threadNotifier.Run})
-	case AppChatter:
-		store, err := chatterstate.New(db)
-		if err != nil {
-			return err
-		}
-		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens)
-		chatter := chatterapp.New(cfg.Chatter, text, store, telegramClient, completer, metrics, logger.With("worker", workerChatter))
-		chatter.SetModelName(cfg.DeepSeek.Model)
-		threadReader := gateway.NewClient(
-			cfg.Ptchan.GatewayURL,
-			gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
-		)
-		chatter.SetPtchanContext(assistant.NewPtchanContext(cfg.Chatter.PtchanContext, threadReader, logger.With("worker", workerChatter, "context", "ptchan")))
-		workers = append(workers, worker{name: workerChatter, run: chatter.Run})
-	case AppChanner:
-		store, err := channerstate.New(db)
-		if err != nil {
-			return err
-		}
-		completer := deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens)
-		client := gateway.NewClient(
-			cfg.Ptchan.GatewayURL,
-			gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret},
-		)
-		ptchanResponder := channerapp.Responder{
-			Config:    cfg.Channer,
-			Store:     store,
-			Completer: completer,
-			ModelName: cfg.DeepSeek.Model,
-			Ptchan:    assistant.NewPtchanContext(cfg.Channer.PtchanContext, client, logger.With("worker", workerChanner, "context", "ptchan")),
-			Poster:    client,
-			Limit: channerapp.NewLimiter(
-				cfg.Channer.RequestLimit,
-				cfg.Channer.RequestBurst,
-				cfg.Channer.ThreadRequestLimit,
-				cfg.Channer.ThreadRequestBurst,
-			),
-			Logger:  logger.With("worker", workerChanner),
-			Metrics: metrics,
-		}
-		gatewayEventConsumers = append(gatewayEventConsumers, gatewayEventTarget{name: workerChanner, consumer: ptchanResponder})
-		workers = append(workers, worker{name: workerChanner, run: ptchanResponder.Run})
-	default:
-		return fmt.Errorf("unknown app %q", cfg.App)
+	defer shutdownMetricsServer(httpServer, logger)
+	store, err := channerstate.New(db)
+	if err != nil {
+		return err
 	}
-	if len(gatewayEventConsumers) > 0 {
-		server := gatewayEventServer{
-			addr:      cfg.GatewayAddr,
-			ptchan:    cfg.Ptchan,
-			consumers: gatewayEventConsumers,
-			logger:    logger.With("worker", workerGatewayEvents),
-			metrics:   metrics,
-			nowFunc:   time.Now,
-		}
-		workers = append(workers, worker{name: workerGatewayEvents, run: server.run})
+	client, err := gateway.New(cfg.Ptchan.GatewayURL, gateway.Credentials{Name: cfg.Ptchan.IntegrationName, Secret: cfg.Ptchan.Secret})
+	if err != nil {
+		return fmt.Errorf("create ptchan gateway client: %w", err)
 	}
+	responder := channer.Responder{
+		Config:    cfg.Channer,
+		Store:     store,
+		Completer: deepseek.New(cfg.DeepSeek.APIKey, cfg.DeepSeek.Model, cfg.DeepSeek.MaxTokens),
+		ModelName: cfg.DeepSeek.Model,
+		ThreadContext: thread.New(
+			cfg.Channer.ThreadContext,
+			client,
+			logger.With("worker", workerChanner, "context", "ptchan"),
+		),
+		Poster: client,
+		Limit: channer.NewLimiter(
+			cfg.Channer.GlobalPerHour,
+			cfg.Channer.GlobalBurst,
+			cfg.Channer.ThreadPerHour,
+			cfg.Channer.ThreadBurst,
+		),
+		Logger:  logger.With("worker", workerChanner),
+		Metrics: metrics,
+	}
+	gatewayServer := gatewayEventServer{
+		addr:    cfg.GatewayAddr,
+		ptchan:  cfg.Ptchan,
+		consume: responder.ConsumeGatewayEvent,
+		logger:  logger.With("worker", workerGatewayEvents),
+		metrics: metrics,
+	}
+	workers := []worker{{name: workerChanner, run: responder.Run}, {name: workerGatewayEvents, run: gatewayServer.run}}
 	ready.Store(true)
-	logger.Info("service starting", "app", cfg.App)
-
 	var group sync.WaitGroup
 	group.Add(len(workers))
-	for _, worker := range workers {
-		go func() {
-			defer group.Done()
-			supervise(runCtx, worker, logger)
-		}()
+	for _, w := range workers {
+		go func(w worker) { defer group.Done(); supervise(ctx, w, logger) }(w)
 	}
-
+	var runErr error
 	select {
 	case <-ctx.Done():
-	case err := <-serverErrors:
-		stop()
-		group.Wait()
-		return fmt.Errorf("http server: %w", err)
+	case err := <-httpErrors:
+		runErr = fmt.Errorf("http server: %w", err)
 	}
-	stop()
+	cancel()
 	group.Wait()
-	logger.Info("shutdown requested")
-	return nil
+	return runErr
 }
-
-func pollingWorker(name WorkerName, interval time.Duration, poll func(context.Context) error, metrics *metrics, logger *slog.Logger) worker {
-	return worker{
-		name: name,
-		run: func(ctx context.Context) error {
-			for {
-				startedAt := time.Now()
-				err := poll(ctx)
-				if ctx.Err() != nil {
-					return nil
-				}
-				metrics.ObserveOperation(string(name), time.Since(startedAt), err)
-				if err != nil {
-					logger.Warn("poll failed", "worker", name, "error", err)
-				}
-
-				timer := time.NewTimer(interval)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return nil
-				case <-timer.C:
-				}
-			}
-		},
-	}
-}
-
-func supervise(ctx context.Context, worker worker, logger *slog.Logger) {
+func supervise(ctx context.Context, w worker, l *slog.Logger) {
 	for {
-		err := worker.run(ctx)
+		err := w.run(ctx)
 		if ctx.Err() != nil {
 			return
 		}
-		logger.Error("worker stopped", "worker", worker.name, "error", err)
-
-		timer := time.NewTimer(time.Second)
+		l.Error("worker stopped", "worker", w.name, "error", err)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return
-		case <-timer.C:
+		case <-time.After(time.Second):
 		}
 	}
 }
-
-func startHTTPServer(addr string, metrics *metrics, ready *atomic.Bool, logger *slog.Logger) (*http.Server, <-chan error, error) {
+func startHTTPServer(addr string, m *metrics, ready *atomic.Bool, l *slog.Logger) (*http.Server, <-chan error, error) {
 	if addr == "" {
 		return nil, nil, nil
 	}
-
-	listener, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listen for http: %w", err)
+		return nil, nil, err
 	}
-
-	server := &http.Server{
-		Handler:           httpHandler(metrics, ready),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	errors := make(chan error, 1)
+	s := &http.Server{Handler: httpHandler(m, ready), ReadHeaderTimeout: 5 * time.Second}
+	errs := make(chan error, 1)
 	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			errors <- err
+		if err := s.Serve(ln); err != nil && err != http.ErrServerClosed {
+			errs <- err
 		}
 	}()
-
-	logger.Info("http listening", "address", listener.Addr().String())
-	return server, errors, nil
+	return s, errs, nil
 }
-
-func httpHandler(metrics *metrics, ready *atomic.Bool) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthHandler)
-	mux.HandleFunc("/readyz", readinessHandler(ready))
-	mux.Handle("/metrics", metrics.handler())
-	return mux
+func httpHandler(m *metrics, r *atomic.Bool) http.Handler {
+	x := http.NewServeMux()
+	x.HandleFunc("/healthz", healthHandler)
+	x.HandleFunc("/readyz", readinessHandler(r))
+	x.Handle("/metrics", m.handler())
+	return x
 }
-
-func healthHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = io.WriteString(w, "ok\n")
-}
-
-func readinessHandler(ready *atomic.Bool) http.HandlerFunc {
+func healthHandler(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") }
+func readinessHandler(r *atomic.Bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		if ready == nil || !ready.Load() {
-			http.Error(w, "not ready", http.StatusServiceUnavailable)
+		if r == nil || !r.Load() {
+			http.Error(w, "not ready", 503)
 			return
 		}
 		healthHandler(w, nil)
 	}
 }
-
 func CheckHealth(addr string) error {
 	if addr == "" {
 		addr = "127.0.0.1:9090"
@@ -275,27 +150,24 @@ func CheckHealth(addr string) error {
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}
-
-	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + addr + "/healthz")
+	c := http.Client{Timeout: 3 * time.Second}
+	resp, err := c.Get("http://" + addr + "/healthz")
 	if err != nil {
-		return fmt.Errorf("send health check: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 {
 		return fmt.Errorf("health check status %s", resp.Status)
 	}
 	return nil
 }
-
-func shutdownMetricsServer(server *http.Server, logger *slog.Logger) {
-	if server == nil {
+func shutdownMetricsServer(s *http.Server, l *slog.Logger) {
+	if s == nil {
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		logger.Warn("metrics server shutdown failed", "error", err)
+	ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+	defer c()
+	if err := s.Shutdown(ctx); err != nil {
+		l.Warn("http shutdown failed", "error", err)
 	}
 }

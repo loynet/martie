@@ -1,148 +1,78 @@
-# Language for user-visible output and completion context: "en" or "pt-PT".
-locale = "en"
-# Assistant name used in prompts and Telegram attribution. ptchan display names
-# and public tripcodes are configured on the corresponding gateway integration.
+# Display name used when {{name}} appears in channer.system_prompt. It is not a
+# gateway credential.
 name = "Martie"
 
+# ptchan-gateway is Martie's only ptchan boundary. Martie never reads from or
+# posts to ptchan directly.
 [ptchan]
-# Public ptchan origin used when parsing and formatting thread links.
+# Public ptchan base URL. It is used when rendering thread context and links.
 base_url = "https://ptchan.org"
-# ptchan-gateway base URL used for signed context and posting requests.
+# Signed gateway API URL. This example assumes a Docker service named
+# ptchan-gateway; use an address reachable from the Martie process.
 gateway_url = "http://ptchan-gateway:8080"
-# Integration name configured in ptchan-gateway. Give simultaneous dev and prod
-# identities separate integrations, public tripcodes, and secrets. The matching
-# secret is read from PTCHAN_INTEGRATION_<INTEGRATION_NAME>_SECRET, so "martie"
-# uses PTCHAN_INTEGRATION_MARTIE_SECRET.
+# Gateway integration identity. Its secret comes from
+# PTCHAN_INTEGRATION_MARTIE_SECRET; replace both when changing this value.
 integration_name = "martie"
 
-# Uncomment only when split deployments use separate ptchan-gateway integrations.
-# [ptchan.chatter]
-# integration_name = "martie-chatter"
-#
-# [ptchan.channer]
-# integration_name = "martie-channer"
-#
-# [ptchan.threadnotifier]
-# integration_name = "martie-threadnotifier"
-
-[telegram]
-# Channel or chat that receives gateway and stream notifications.
-notification_chat_id = 123456789
-# Linked discussion group where `chatter` accepts requests.
-discussion_chat_id = -1001234567890
-# Telegram user IDs allowed to invoke chatter when allow_all_users is false.
-allowed_user_ids = [123456789]
-# Set this instead of allowed_user_ids to permit every human in the discussion chat.
-allow_all_users = false
-
-[chatter]
-# `chatter` and `channer` intentionally have separate system prompts and
-# settings. Telegram has named users and group memory; ptchan is public,
-# anonymous, quote-oriented, and should be handled by `channer`.
-# Maximum Unicode characters accepted in one request.
-max_input_runes = 4096
-# Provider-facing personality and behavior. Replace this example in your
-# untracked config with the character, voice, boundaries, and response style you
-# want. Do not put Telegram or ptchan transcript-reading rules here; Martie
-# generates those context packets itself.
-# {{name}} is replaced with the top-level name in both prompts.
-system_prompt = """
-You are {{name}}, a helpful conversational assistant in Telegram.
-"""
-
-[chatter.memory]
-# Forget exchanges after this duration and retain at most this many per topic.
-ttl = "10m"
-history_exchanges = 8
-
-[chatter.rate_limit]
-# Requests granted to each user per hour and the maximum immediate burst.
-user_limit = 25
-user_burst = 6
-# Requests granted across all users per hour and the maximum immediate burst.
-global_limit = 100
-global_burst = 12
-
-[chatter.ptchan_context]
-# Render the OP when available plus this many focused or recent non-OP posts.
-max_replies = 25
-
+# Channer is Martie's public mention responder.
 [channer]
-# The ptchan-native assistant surface is invoked by signed gateway post events
-# and replies through the signed gateway posting API, not by fetching or posting
-# to ptchan directly.
-# Case-insensitive ptchan mentions that invoke Martie.
+# A new post must contain one of these case-insensitive mentions to receive a
+# response. Whitespace and duplicate values are removed at startup.
 mentions = ["@martie"]
-# Maximum Unicode characters accepted in one ptchan post request.
+# Reject a triggering post above this many Unicode code points before reading
+# context or calling the model.
 max_input_runes = 4096
-# Retain the one-shot idempotency ledger for this long. Set to "0s" to disable pruning.
+# Martie's public-response instructions. {{name}} expands to the top-level
+# name. Keep this public-surface prompt separate from secrets.
+system_prompt = "You are {{name}}, a helpful public ptchan assistant."
+# How long admitted-event records remain in SQLite. Set to "0s" to retain the
+# event ledger indefinitely. Retention must not be shorter than the period in
+# which duplicate gateway delivery is a concern.
 prune_after = "720h"
-# Separate public-posting personality and behavior for ptchan replies.
-system_prompt = """
-You are {{name}}, a helpful conversational assistant replying publicly on ptchan.
-"""
 
+# Limits are local safeguards per Martie process, not gateway quotas.
 [channer.rate_limit]
-# Public replies granted across all threads per hour and maximum immediate burst.
-request_limit = 25
-request_burst = 3
-# Public replies granted to one thread per hour and maximum immediate burst.
-thread_limit = 6
+# Maximum admitted requests per hour across all threads.
+global_per_hour = 25
+# Maximum immediate global requests. It must be positive and no greater than
+# global_per_hour.
+global_burst = 3
+# Maximum admitted requests per hour for one thread.
+thread_per_hour = 6
+# Maximum immediate requests for one thread. It must be positive and no greater
+# than thread_per_hour.
 thread_burst = 2
 
+# Bounded, sanitized thread context supplied to the model for an admitted post.
 [channer.ptchan_context]
-# Read sanitized thread data from ptchan-gateway for the triggering thread/post.
-# Render the OP when available plus this many focused or recent non-OP posts.
+# Maximum preceding/relevant replies included in the request-scoped context.
+# Context is never persisted by Martie.
 max_replies = 25
 
+# DeepSeek completion settings. The API key belongs in DEEPSEEK_API_KEY, not
+# this file.
 [deepseek]
-# Completion model sent to DeepSeek.
+# Model identifier accepted by the configured DeepSeek account.
 model = "deepseek-v4-flash"
-# Maximum tokens DeepSeek may generate for one response.
+# Upper bound requested for the generated completion. It must be positive.
 max_tokens = 500
 
+# Private listener for signed ptchan-gateway webhooks. Point the integration at
+# <public Martie URL>/internal/ptchan/events; do not expose this listener to
+# untrusted networks unless the gateway's signature verification remains intact.
 [gateway.webhook]
-# Address where Martie accepts signed gateway webhooks at the stable
-# /internal/ptchan/events path.
 addr = ":8081"
 
-[threadnotifier]
-# Notify after this many observed reply posts.
-min_reply_posts = 10
-# Boards and case-insensitive OP text fragments excluded from tracking.
-board_denylist = []
-keyword_denylist = []
-# Zero disables the age limit.
-max_thread_age = "0s"
-# Forget old tracked threads and sent notification/event receipts after this duration.
-prune_after = "24h"
-
+# Process-level health and Prometheus endpoint. Leave http_addr empty to disable
+# it. Docker's default health check expects this to be reachable on :9090.
 [runtime]
-# Process health/readiness and Prometheus address. Empty disables the endpoint.
 http_addr = ":9090"
-
 [runtime.logging]
-# Minimum log level: "debug", "info", "warn", or "error".
+# JSON logs are always written to stdout. Choose the minimum severity to emit:
+# debug, info, warn, or error.
 level = "info"
-# Output encoding: human-readable "text" or structured "json".
-format = "text"
 
+# SQLite database path. Relative paths resolve from Martie's working directory;
+# the Docker image maps data/martie.db to its persistent /data volume.
 [storage]
-# SQLite location shared by default.
 sqlite_path = "data/martie.db"
-
-[streamnotifier]
-# How often to probe configured streams.
-poll_interval = "1m"
-
-[[streamnotifier.channel]]
-# Stable storage key, URL used to detect liveness, and public link sent to Telegram.
-key = "main"
-probe_url = "https://stream.example.com/main/llhls.m3u8"
-page_url = "https://example.com/main"
-
-[[streamnotifier.channel]]
-# Repeat the same three fields for each additional stream.
-key = "backup"
-probe_url = "https://stream.example.com/backup/llhls.m3u8"
-page_url = "https://example.com/backup"

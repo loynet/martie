@@ -1,39 +1,13 @@
 package app
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 )
-
-func TestPollingWorkerWaitsAfterPollCompletes(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	interval := 30 * time.Millisecond
-	var calls []time.Time
-	worker := pollingWorker("test", interval, func(context.Context) error {
-		calls = append(calls, time.Now())
-		if len(calls) == 2 {
-			cancel()
-		}
-		return nil
-	}, newMetrics(), discardLogger())
-
-	if err := worker.run(ctx); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-	if len(calls) != 2 {
-		t.Fatalf("poll calls = %d, want 2", len(calls))
-	}
-	if elapsed := calls[1].Sub(calls[0]); elapsed < interval {
-		t.Fatalf("time between polls = %s, want at least %s", elapsed, interval)
-	}
-}
 
 func TestHTTPHandlerServesHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)

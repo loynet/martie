@@ -1,4 +1,4 @@
-package assistant
+package channer
 
 import (
 	"strings"
@@ -6,14 +6,14 @@ import (
 	"unicode/utf8"
 )
 
-func TruncateRunes(text string, limit int) string {
+func truncateRunes(text string, limit int) string {
 	if utf8.RuneCountInString(text) <= limit {
 		return text
 	}
 	return string([]rune(text)[:limit-1]) + "…"
 }
 
-func StripUnsafeControls(text string) string {
+func stripUnsafeControls(text string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\r' || r == '\t' || !unicode.IsControl(r) {
 			return r
@@ -22,7 +22,7 @@ func StripUnsafeControls(text string) string {
 	}, text)
 }
 
-func WriteFencedBlock(b *strings.Builder, info, body string) {
+func writeFencedBlock(b *strings.Builder, info, body string) {
 	fence := strings.Repeat("`", longestBacktickRun(body)+1)
 	if len(fence) < 3 {
 		fence = "```"
@@ -38,17 +38,16 @@ func WriteFencedBlock(b *strings.Builder, info, body string) {
 }
 
 func longestBacktickRun(text string) int {
-	longest := 0
-	current := 0
+	longest, current := 0, 0
 	for _, r := range text {
 		if r == '`' {
 			current++
 			if current > longest {
 				longest = current
 			}
-			continue
+		} else {
+			current = 0
 		}
-		current = 0
 	}
 	return longest
 }

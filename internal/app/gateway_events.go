@@ -10,30 +10,20 @@ import (
 	"net/http"
 	"time"
 
-	"martie/internal/gateway"
+	"github.com/loynet/ptchan-gateway/clients/go"
 )
 
 const (
 	gatewayWebhookPath   = "/internal/ptchan/events"
-	maxGatewayEventBytes = 1 << 20
+	maxGatewayEventBytes = gateway.DefaultWebhookMaxBodyBytes
 )
 
-type gatewayEventConsumer interface {
-	ConsumeGatewayEvent(context.Context, gateway.WebhookEvent) error
-}
-
-type gatewayEventTarget struct {
-	name     WorkerName
-	consumer gatewayEventConsumer
-}
-
 type gatewayEventServer struct {
-	addr      string
-	ptchan    PtchanConfig
-	consumers []gatewayEventTarget
-	logger    *slog.Logger
-	metrics   *metrics
-	nowFunc   func() time.Time
+	addr    string
+	ptchan  PtchanConfig
+	consume func(context.Context, gateway.WebhookEvent) error
+	logger  *slog.Logger
+	metrics *metrics
 }
 
 func (s gatewayEventServer) run(ctx context.Context) error {
@@ -58,7 +48,7 @@ func (s gatewayEventServer) run(ctx context.Context) error {
 		}
 	}()
 
-	s.logger.Info("gateway event server listening", "address", listener.Addr().String(), "path", gatewayWebhookPath, "consumers", len(s.consumers))
+	s.logger.Info("gateway event server listening", "address", listener.Addr().String(), "path", gatewayWebhookPath)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -78,22 +68,30 @@ func (s gatewayEventServer) handleEvent(ctx context.Context, w http.ResponseWrit
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(&io.LimitedReader{R: r.Body, N: maxGatewayEventBytes + 1})
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxGatewayEventBytes))
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			s.metrics.observeGatewayWebhook("payload_too_large")
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		s.metrics.observeGatewayWebhook("bad_request")
 		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	if len(body) > maxGatewayEventBytes {
-		s.metrics.observeGatewayWebhook("payload_too_large")
-		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
 	timestamp := r.Header.Get("x-ptchan-timestamp")
 	eventID := r.Header.Get("x-ptchan-event-id")
 	signature := r.Header.Get("x-ptchan-signature")
-	event, err := gateway.VerifyWebhookBody(s.ptchan.Secret, eventID, timestamp, signature, body, s.nowFunc())
+	event, err := gateway.VerifyWebhookBody(
+		s.ptchan.Secret,
+		eventID,
+		timestamp,
+		signature,
+		body,
+		gateway.WithWebhookMaxBodyBytes(maxGatewayEventBytes),
+	)
 	if err != nil {
 		s.logger.Warn("gateway webhook rejected", "error", err)
 		if errors.Is(err, gateway.ErrWebhookAuthentication) {
@@ -106,16 +104,14 @@ func (s gatewayEventServer) handleEvent(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	for _, target := range s.consumers {
-		if err := target.consumer.ConsumeGatewayEvent(ctx, *event); err != nil {
-			s.metrics.observeGatewayEvent(string(target.name), event.Kind, metricResultError)
-			s.logger.Warn("gateway event failed", "event_id", event.EventID, "kind", event.Kind, "board", event.Post.Board, "thread_id", event.Post.ThreadID, "error", err)
-			s.metrics.observeGatewayWebhook("consumer_error")
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			return
-		}
-		s.metrics.observeGatewayEvent(string(target.name), event.Kind, metricResultSuccess)
+	if err := s.consume(ctx, *event); err != nil {
+		s.metrics.observeGatewayEvent(event.Kind, metricResultError)
+		s.logger.Warn("gateway event failed", "event_id", event.EventID, "kind", event.Kind, "board", event.Post.Board, "thread_id", event.Post.ThreadID, "error", err)
+		s.metrics.observeGatewayWebhook("consumer_error")
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
 	}
+	s.metrics.observeGatewayEvent(event.Kind, metricResultSuccess)
 	s.metrics.observeGatewayWebhook(metricResultSuccess)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"martie/internal/gateway"
+	"github.com/loynet/ptchan-gateway/clients/go"
 )
 
 func TestLimiterKeepsThreadAndGlobalBudgetsIndependent(t *testing.T) {

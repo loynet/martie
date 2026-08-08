@@ -1,21 +1,17 @@
 BINARY ?= martie
 IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf local)
 IMAGE ?= martie:$(IMAGE_TAG)
-MARTIE_ENV ?= $(if $(BOT_ENV),$(BOT_ENV),dev)
-MARTIE_APP ?= channer
+MARTIE_ENV ?= dev
 ENV_FILE ?= .env.$(MARTIE_ENV)
 CONFIG_FILE ?= config/$(MARTIE_ENV).toml
-CONTAINER ?= martie-$(MARTIE_ENV)-$(MARTIE_APP)
-VOLUME ?= martie-$(MARTIE_ENV)-$(MARTIE_APP)-data
+CONTAINER ?= martie-$(MARTIE_ENV)
+VOLUME ?= martie-$(MARTIE_ENV)-data
 DOCKER_RUN_EXTRA ?=
 DOCKER_LOG_DRIVER ?= local
 DOCKER_NETWORK ?=
 GO_BUILD_FLAGS ?= -trimpath -buildvcs=false
 LOAD_ENV = set -a; . ./$(ENV_FILE); set +a; \
-	MARTIE_ENV=$(MARTIE_ENV); \
-	BOT_ENV=$(MARTIE_ENV); \
-	CONFIG_FILE=$(CONFIG_FILE); \
-	export MARTIE_ENV BOT_ENV CONFIG_FILE
+	CONFIG_FILE=$(CONFIG_FILE); export CONFIG_FILE
 DOCKER_RUN_FLAGS = --env-file $(ENV_FILE) \
 	-e CONFIG_FILE=/etc/martie/config.toml \
 	-e HEALTHCHECK_ADDR=127.0.0.1:9090 \
@@ -51,8 +47,7 @@ endif
 help:
 	@printf '%s\n' \
 		'Targets: fmt lint test tidy build run check clean' \
-		'Check:   check-config validates config and selected app dependencies' \
-		'Apps:    MARTIE_APP=chatter, channer, threadnotifier, or streamnotifier' \
+		'Check:   check-config validates the Martie configuration' \
 		'Docker:  docker-build docker-check-config docker-run docker-deploy docker-logs docker-clean' \
 		'Config:  MARTIE_ENV=dev reads config/dev.toml and .env.dev' \
 		'Image:   IMAGE defaults to martie:$(IMAGE_TAG)' \
@@ -75,10 +70,10 @@ build:
 	go build $(GO_BUILD_FLAGS) -o $(BINARY) ./cmd/martie
 
 run:
-	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie $(MARTIE_APP)
+	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie run
 
 check-config:
-	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie check-config $(MARTIE_APP)
+	$(LOAD_ENV); go run $(GO_BUILD_FLAGS) ./cmd/martie check-config
 
 docker-build:
 	docker build --pull -t $(IMAGE) .
@@ -88,7 +83,7 @@ docker-check-config:
 		$(DOCKER_CHECK_CONFIG_FLAGS) \
 		$(DOCKER_NETWORK_FLAGS) \
 		$(DOCKER_RUN_EXTRA) \
-		$(IMAGE) check-config $(MARTIE_APP)
+		$(IMAGE) check-config
 
 docker-run:
 	docker run -d \
@@ -98,7 +93,7 @@ docker-run:
 		$(DOCKER_LOG_FLAGS) \
 		$(DOCKER_NETWORK_FLAGS) \
 		$(DOCKER_RUN_EXTRA) \
-		$(IMAGE) $(MARTIE_APP)
+		$(IMAGE) run
 
 docker-deploy: docker-build docker-check-config
 	-docker rm -f $(CONTAINER)
@@ -109,14 +104,14 @@ docker-deploy: docker-build docker-check-config
 		$(DOCKER_LOG_FLAGS) \
 		$(DOCKER_NETWORK_FLAGS) \
 		$(DOCKER_RUN_EXTRA) \
-		$(IMAGE) $(MARTIE_APP)
+		$(IMAGE) run
 
 docker-logs:
 	$(DOCKER_LOG_COMMAND)
 
 docker-clean:
-	-docker rm -f martie-dev-chatter martie-prod-chatter martie-dev-channer martie-prod-channer martie-dev-threadnotifier martie-prod-threadnotifier martie-dev-streamnotifier martie-prod-streamnotifier
-	-docker volume rm martie-dev-chatter-data martie-prod-chatter-data martie-dev-channer-data martie-prod-channer-data martie-dev-threadnotifier-data martie-prod-threadnotifier-data martie-dev-streamnotifier-data martie-prod-streamnotifier-data
+	-docker rm -f martie-dev martie-prod
+	-docker volume rm martie-dev-data martie-prod-data
 
 check: fmt lint test
 
