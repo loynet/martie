@@ -8,6 +8,8 @@ import (
 	"github.com/loynet/ptchan-gateway/clients/go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"martie/internal/channer"
 )
 
 type metrics struct {
@@ -78,6 +80,9 @@ func newMetrics() *metrics {
 		m.modelDuration,
 		m.modelTokens,
 	)
+	for _, outcome := range channer.TerminalOutcomes() {
+		m.channerOutcomes.WithLabelValues(outcome)
+	}
 
 	return m
 }

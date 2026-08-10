@@ -35,6 +35,21 @@ const (
 	outcomeNotConfigured      = "not_configured"
 )
 
+// TerminalOutcomes lists the bounded outcome label values emitted for admitted requests.
+func TerminalOutcomes() []string {
+	return []string{
+		outcomePosted,
+		outcomeGlobalRateLimited,
+		outcomeThreadRateLimited,
+		outcomeGatewayRateLimited,
+		outcomeCompletionError,
+		outcomeCompletionRejected,
+		outcomePostingRejected,
+		outcomePostingUnknown,
+		outcomeNotConfigured,
+	}
+}
+
 type Config struct {
 	Mentions      []string
 	SystemPrompt  string
@@ -203,16 +218,16 @@ func (a Responder) handle(ctx context.Context, request request) error {
 		return nil
 	}
 	if a.Completer == nil || a.Poster == nil {
-		return a.markFailed(ctx, request.EventID, "not_configured", "channer completion or posting is not configured")
+		return a.markFailed(ctx, request, "not_configured", "channer completion or posting is not configured")
 	}
 	if a.Limit != nil {
 		switch a.Limit.allow(request.Thread, startedAt) {
 		case limitGlobal:
 			a.logRateLimit(request, "global")
-			return a.markFailed(ctx, request.EventID, outcomeGlobalRateLimited, "channer global rate limit exceeded")
+			return a.markFailed(ctx, request, outcomeGlobalRateLimited, "channer global rate limit exceeded")
 		case limitThread:
 			a.logRateLimit(request, "thread")
-			return a.markFailed(ctx, request.EventID, outcomeThreadRateLimited, "channer thread rate limit exceeded")
+			return a.markFailed(ctx, request, outcomeThreadRateLimited, "channer thread rate limit exceeded")
 		}
 	}
 
@@ -234,17 +249,17 @@ func (a Responder) handle(ctx context.Context, request request) error {
 		a.Metrics.ObserveModelCompletion("deepseek", a.ModelName, time.Since(completionStarted), completion, err)
 	}
 	if err != nil {
-		return a.markFailed(ctx, request.EventID, "completion_error", err.Error())
+		return a.markFailed(ctx, request, "completion_error", err.Error())
 	}
 
 	text, ok := ptchanCompletionText(completion)
 	if !ok {
 		err := fmt.Errorf("completion finish reason %q is not postable", completion.FinishReason)
-		return a.markFailed(ctx, request.EventID, "completion_rejected", err.Error())
+		return a.markFailed(ctx, request, "completion_rejected", err.Error())
 	}
 	replyText := formatChannerReply(request.PostID, text)
 	if replyText == "" {
-		return a.markFailed(ctx, request.EventID, "completion_rejected", "completion contained no reply after removing the triggering post reference")
+		return a.markFailed(ctx, request, "completion_rejected", "completion contained no reply after removing the triggering post reference")
 	}
 	finalizeCtx, cancel = finalizationContext(ctx)
 	err = a.Store.MarkEventPosting(finalizeCtx, request.EventID, a.now().UTC())
@@ -259,13 +274,13 @@ func (a Responder) handle(ctx context.Context, request request) error {
 		}
 		postingErr, structured := postingError(err)
 		if !structured {
-			if markErr := a.markUnknown(ctx, request.EventID, "posting_state_unknown", err.Error()); markErr != nil {
+			if markErr := a.markUnknown(ctx, request, "posting_state_unknown", err.Error()); markErr != nil {
 				return joinErrors(err, markErr)
 			}
 			return nil
 		}
 		if postingErr.Code == "reply_state_unknown" {
-			if markErr := a.markUnknown(ctx, request.EventID, postingErr.Code, postingErr.Message); markErr != nil {
+			if markErr := a.markUnknown(ctx, request, postingErr.Code, postingErr.Message); markErr != nil {
 				return joinErrors(err, markErr)
 			}
 			return nil
@@ -273,13 +288,13 @@ func (a Responder) handle(ctx context.Context, request request) error {
 		if postingErr.Code == "rate_limited" {
 			a.logRateLimit(request, "gateway")
 		}
-		return a.markFailed(ctx, request.EventID, postingFailure(postingErr), err.Error())
+		return a.markFailed(ctx, request, postingFailure(postingErr), err.Error())
 	}
 	finalizeCtx, cancel = finalizationContext(ctx)
 	err = a.Store.MarkEventPosted(finalizeCtx, request.EventID, a.now().UTC())
 	cancel()
 	if err != nil {
-		if markErr := a.markUnknown(ctx, request.EventID, "posted_state_update_failed", err.Error()); markErr != nil {
+		if markErr := a.markUnknown(ctx, request, "posted_state_update_failed", err.Error()); markErr != nil {
 			return joinErrors(err, markErr)
 		}
 		if a.Metrics != nil {
@@ -299,28 +314,34 @@ func (a Responder) logRateLimit(request request, scope string) {
 	a.Logger.Warn("channer request rate limited", "scope", scope, "event_id", request.EventID, "board", request.Thread.Board, "thread_id", request.Thread.ThreadID, "post_id", request.PostID)
 }
 
-func (a Responder) markFailed(ctx context.Context, eventID, code, message string) error {
+func (a Responder) markFailed(ctx context.Context, request request, code, message string) error {
 	finalizeCtx, cancel := finalizationContext(ctx)
 	defer cancel()
-	if err := a.Store.MarkEventFailed(finalizeCtx, eventID, code, message, a.now().UTC()); err != nil {
+	if err := a.Store.MarkEventFailed(finalizeCtx, request.EventID, code, message, a.now().UTC()); err != nil {
 		return err
 	}
+	a.logTerminalFailure(request, channerstate.EventFailedFinal, code, message)
 	if a.Metrics != nil {
 		a.Metrics.ObserveChannerOutcome(failureOutcome(code))
 	}
 	return nil
 }
 
-func (a Responder) markUnknown(ctx context.Context, eventID, code, message string) error {
+func (a Responder) markUnknown(ctx context.Context, request request, code, message string) error {
 	finalizeCtx, cancel := finalizationContext(ctx)
 	defer cancel()
-	if err := a.Store.MarkEventUnknown(finalizeCtx, eventID, code, message, a.now().UTC()); err != nil {
+	if err := a.Store.MarkEventUnknown(finalizeCtx, request.EventID, code, message, a.now().UTC()); err != nil {
 		return err
 	}
+	a.logTerminalFailure(request, channerstate.EventUnknown, code, message)
 	if a.Metrics != nil {
 		a.Metrics.ObserveChannerOutcome(outcomePostingUnknown)
 	}
 	return nil
+}
+
+func (a Responder) logTerminalFailure(request request, status channerstate.EventStatus, code, message string) {
+	a.Logger.Warn("channer request failed", "event_id", request.EventID, "board", request.Thread.Board, "thread_id", request.Thread.ThreadID, "post_id", request.PostID, "status", status, "code", code, "error", message)
 }
 
 func failureOutcome(code string) string {

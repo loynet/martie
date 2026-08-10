@@ -577,12 +577,13 @@ func TestChannerMarksUnstructuredPostingErrorUnknown(t *testing.T) {
 func TestChannerFinalizesFailureAfterContextCancellation(t *testing.T) {
 	store := testChannerStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	var logs bytes.Buffer
 	channer := Responder{
 		Config:    Config{Mentions: []string{"@martie"}, MaxInputRunes: 100},
 		Store:     store,
 		Completer: cancelingCompleter{cancel: cancel},
 		Poster:    &fakePtchanPoster{},
-		Logger:    discardLogger(),
+		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	event := gateway.WebhookEvent{
 		EventID: "Ptchan:post.created:i:108",
@@ -599,6 +600,9 @@ func TestChannerFinalizesFailureAfterContextCancellation(t *testing.T) {
 	}
 	if !ok || record.Status != channerstate.EventFailedFinal || record.ErrorCode != "completion_error" {
 		t.Fatalf("record = %+v, found %t", record, ok)
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") || !strings.Contains(got, "msg=\"channer request failed\"") || !strings.Contains(got, "event_id=Ptchan:post.created:i:108") || !strings.Contains(got, "board=i") || !strings.Contains(got, "thread_id=100") || !strings.Contains(got, "post_id=108") || !strings.Contains(got, "status=failed_final") || !strings.Contains(got, "code=completion_error") || !strings.Contains(got, "error=\"context canceled\"") {
+		t.Fatalf("failure log = %q", got)
 	}
 }
 
